@@ -21,6 +21,7 @@ import {
   Lock,
   UserPlus,
   Globe,
+  RefreshCw,
 } from "lucide-react";
 
 const CATEGORIES = ["For You", "Trending", "Music", "Gaming", "Programming", "4K HDR", "News"];
@@ -42,7 +43,6 @@ const AVATAR_COLORS = [
 interface PlatformAccount {
   id: string;
   email: string;
-  password: string;
   name: string;
   handle: string;
   color: string;
@@ -72,42 +72,6 @@ interface ChannelInfo {
   subscribers?: string;
 }
 
-const DEFAULT_COMMUNITY_USERS: PlatformAccount[] = [
-  {
-    id: "user-1",
-    email: "alex@jewtube.app",
-    password: "demo",
-    name: "Alex Rivera",
-    handle: "@alexbuilds",
-    color: "bg-blue-600",
-    bio: "Full-stack tinkerer, mechanical keyboards, and late-night lofi.",
-    joinedAt: "2026-01-12",
-    favoriteTopics: ["Programming", "Tech", "Lofi"],
-  },
-  {
-    id: "user-2",
-    email: "maya@jewtube.app",
-    password: "demo",
-    name: "Maya Lin",
-    handle: "@mayagames",
-    color: "bg-purple-600",
-    bio: "Variety gaming streams, speedruns, and indie reviews.",
-    joinedAt: "2026-02-04",
-    favoriteTopics: ["Gaming", "Speedruns", "Indie"],
-  },
-  {
-    id: "user-3",
-    email: "sam@jewtube.app",
-    password: "demo",
-    name: "Samir Patel",
-    handle: "@samir4k",
-    color: "bg-emerald-600",
-    bio: "Cinematography, 4K HDR travel films, and sound design.",
-    joinedAt: "2026-03-19",
-    favoriteTopics: ["4K HDR", "Travel", "Filmmaking"],
-  },
-];
-
 type TabView =
   | "home"
   | "subscriptions"
@@ -118,7 +82,7 @@ type TabView =
   | "users"
   | "auth";
 
-export default function jewtubeApp() {
+export default function YewTubeApp() {
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [matchedChannels, setMatchedChannels] = useState<ChannelInfo[]>([]);
   const [activeChannel, setActiveChannel] = useState<ChannelInfo | null>(null);
@@ -131,15 +95,16 @@ export default function jewtubeApp() {
   const [tab, setTab] = useState<TabView>("home");
   const [loading, setLoading] = useState(true);
 
-  // Platform Accounts & Email Auth State
-  const [accounts, setAccounts] = useState<PlatformAccount[]>(DEFAULT_COMMUNITY_USERS);
+  // Shared Cloud Platform Accounts State
+  const [accounts, setAccounts] = useState<PlatformAccount[]>([]);
   const [currentUser, setCurrentUser] = useState<PlatformAccount | null>(null);
   const [userDirectorySearch, setUserDirectorySearch] = useState("");
   const [selectedDirectoryUser, setSelectedDirectoryUser] = useState<PlatformAccount | null>(
     null
   );
+  const [loadingUsers, setLoadingUsers] = useState(false);
 
-  // Auth Form State (Sign In / Register)
+  // Auth Form State
   const [authMode, setAuthMode] = useState<"signin" | "register">("register");
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
@@ -148,6 +113,7 @@ export default function jewtubeApp() {
   const [authBio, setAuthBio] = useState("");
   const [authColor, setAuthColor] = useState("bg-emerald-600");
   const [authError, setAuthError] = useState("");
+  const [authSubmitting, setAuthSubmitting] = useState(false);
 
   // Edit Profile State
   const [isEditingProfile, setIsEditingProfile] = useState(false);
@@ -163,25 +129,31 @@ export default function jewtubeApp() {
   const [interestScores, setInterestScores] = useState<Record<string, number>>({});
   const [hydrated, setHydrated] = useState(false);
 
-  // Load saved accounts & activity from localStorage
+  // Fetch all shared accounts from backend database
+  const fetchPlatformUsers = async () => {
+    setLoadingUsers(true);
+    try {
+      const res = await fetch("/api/users", { cache: "no-store" });
+      const data = await res.json();
+      if (Array.isArray(data.users)) {
+        setAccounts(data.users);
+      }
+    } catch {
+      // Ignore network errors
+    }
+    setLoadingUsers(false);
+  };
+
+  // Load saved session & activity on startup
   useEffect(() => {
     try {
-      const savedAccounts = localStorage.getItem("jewtube_accounts");
-      const savedCurrentUserId = localStorage.getItem("jewtube_current_user_id");
-      const savedHistory = localStorage.getItem("jewtube_history");
-      const savedLiked = localStorage.getItem("jewtube_liked");
-      const savedSubs = localStorage.getItem("jewtube_subs");
-      const savedInterests = localStorage.getItem("jewtube_interests");
+      const savedSession = localStorage.getItem("yewtube_session_user");
+      const savedHistory = localStorage.getItem("yewtube_history");
+      const savedLiked = localStorage.getItem("yewtube_liked");
+      const savedSubs = localStorage.getItem("yewtube_subs");
+      const savedInterests = localStorage.getItem("yewtube_interests");
 
-      const loadedAccounts: PlatformAccount[] = savedAccounts
-        ? JSON.parse(savedAccounts)
-        : DEFAULT_COMMUNITY_USERS;
-      setAccounts(loadedAccounts);
-
-      if (savedCurrentUserId) {
-        const found = loadedAccounts.find((a) => a.id === savedCurrentUserId) || null;
-        setCurrentUser(found);
-      }
+      if (savedSession) setCurrentUser(JSON.parse(savedSession));
       if (savedHistory) setHistory(JSON.parse(savedHistory));
       if (savedLiked) setLikedVideos(JSON.parse(savedLiked));
       if (savedSubs) setSubscriptions(JSON.parse(savedSubs));
@@ -189,23 +161,23 @@ export default function jewtubeApp() {
     } catch {
       // Ignore storage errors
     }
+    fetchPlatformUsers();
     setHydrated(true);
   }, []);
 
-  // Persist changes
+  // Persist local session & watch preferences
   useEffect(() => {
     if (!hydrated) return;
-    localStorage.setItem("jewtube_accounts", JSON.stringify(accounts));
     if (currentUser) {
-      localStorage.setItem("jewtube_current_user_id", currentUser.id);
+      localStorage.setItem("yewtube_session_user", JSON.stringify(currentUser));
     } else {
-      localStorage.removeItem("jewtube_current_user_id");
+      localStorage.removeItem("yewtube_session_user");
     }
-    localStorage.setItem("jewtube_history", JSON.stringify(history));
-    localStorage.setItem("jewtube_liked", JSON.stringify(likedVideos));
-    localStorage.setItem("jewtube_subs", JSON.stringify(subscriptions));
-    localStorage.setItem("jewtube_interests", JSON.stringify(interestScores));
-  }, [accounts, currentUser, history, likedVideos, subscriptions, interestScores, hydrated]);
+    localStorage.setItem("yewtube_history", JSON.stringify(history));
+    localStorage.setItem("yewtube_liked", JSON.stringify(likedVideos));
+    localStorage.setItem("yewtube_subs", JSON.stringify(subscriptions));
+    localStorage.setItem("yewtube_interests", JSON.stringify(interestScores));
+  }, [currentUser, history, likedVideos, subscriptions, interestScores, hydrated]);
 
   const buildPersonalizedQuery = () => {
     const topKeywords = Object.entries(interestScores)
@@ -235,15 +207,20 @@ export default function jewtubeApp() {
         updated[word] = (updated[word] || 0) + weight;
       });
 
-      // Sync top topics onto the logged-in user's public directory profile
       if (currentUser) {
         const top3 = Object.entries(updated)
           .sort((a, b) => b[1] - a[1])
           .slice(0, 3)
           .map(([k]) => k.charAt(0).toUpperCase() + k.slice(1));
-        setAccounts((accs) =>
-          accs.map((a) => (a.id === currentUser.id ? { ...a, favoriteTopics: top3 } : a))
-        );
+        fetch("/api/users", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "update",
+            userId: currentUser.id,
+            updates: { favoriteTopics: top3 },
+          }),
+        }).catch(() => {});
       }
 
       return updated;
@@ -270,7 +247,6 @@ export default function jewtubeApp() {
     fetchVideos(buildPersonalizedQuery());
   }, [hydrated]);
 
-  // Open a creator's Channel Page with category tab support
   const openChannel = async (
     channelName: string,
     channelId?: string,
@@ -364,63 +340,46 @@ export default function jewtubeApp() {
     setNewComment("");
   };
 
-  // Email Registration & Sign-In Handler
-  const handleAuthSubmit = (e: React.FormEvent) => {
+  // Cloud Registration & Sign-In Handler
+  const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError("");
-    const emailClean = authEmail.trim().toLowerCase();
+    setAuthSubmitting(true);
 
-    if (!emailClean || !emailClean.includes("@")) {
-      setAuthError("Please enter a valid email address.");
-      return;
-    }
-    if (authPassword.trim().length < 4) {
-      setAuthError("Password must be at least 4 characters.");
-      return;
-    }
+    try {
+      const res = await fetch("/api/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: authMode,
+          email: authEmail,
+          password: authPassword,
+          name: authName,
+          handle: authHandle,
+          bio: authBio,
+          color: authColor,
+        }),
+      });
+      const data = await res.json();
 
-    if (authMode === "signin") {
-      const matched = accounts.find(
-        (a) => a.email.toLowerCase() === emailClean && a.password === authPassword
-      );
-      if (!matched) {
-        setAuthError("No account found with that email and password.");
+      if (!res.ok || data.error) {
+        setAuthError(data.error || "Authentication failed.");
+        setAuthSubmitting(false);
         return;
       }
-      setCurrentUser(matched);
-      setTab("account");
-      setAuthEmail("");
-      setAuthPassword("");
-    } else {
-      if (accounts.some((a) => a.email.toLowerCase() === emailClean)) {
-        setAuthError("An account with this email already exists. Try signing in.");
-        return;
-      }
-      const cleanName = authName.trim() || emailClean.split("@")[0];
-      const rawHandle = authHandle.trim() || cleanName.toLowerCase().replace(/\s+/g, "");
-      const formattedHandle = rawHandle.startsWith("@") ? rawHandle : `@${rawHandle}`;
 
-      const newAccount: PlatformAccount = {
-        id: `user-${Date.now()}`,
-        email: emailClean,
-        password: authPassword,
-        name: cleanName,
-        handle: formattedHandle,
-        color: authColor,
-        bio: authBio.trim() || "New jewtube creator and viewer.",
-        joinedAt: new Date().toISOString().slice(0, 10),
-        favoriteTopics: ["Trending"],
-      };
-
-      setAccounts((prev) => [newAccount, ...prev]);
-      setCurrentUser(newAccount);
+      setCurrentUser(data.user);
+      await fetchPlatformUsers();
       setTab("account");
       setAuthEmail("");
       setAuthPassword("");
       setAuthName("");
       setAuthHandle("");
       setAuthBio("");
+    } catch {
+      setAuthError("Network error. Please try again.");
     }
+    setAuthSubmitting(false);
   };
 
   const handleSearch = (e: React.FormEvent) => {
@@ -480,21 +439,39 @@ export default function jewtubeApp() {
     setIsEditingProfile(true);
   };
 
-  const saveProfile = (e: React.FormEvent) => {
+  const saveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentUser) return;
     const formattedHandle = editHandle.startsWith("@")
       ? editHandle.trim()
       : `@${editHandle.trim().replace(/\s+/g, "")}`;
-    const updated: PlatformAccount = {
-      ...currentUser,
+
+    const updates = {
       name: editName.trim() || currentUser.name,
       handle: formattedHandle || currentUser.handle,
       bio: editBio.trim(),
       color: editColor,
     };
-    setCurrentUser(updated);
-    setAccounts((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
+
+    try {
+      const res = await fetch("/api/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update",
+          userId: currentUser.id,
+          updates,
+        }),
+      });
+      const data = await res.json();
+      if (data.user) {
+        setCurrentUser(data.user);
+        await fetchPlatformUsers();
+      }
+    } catch {
+      // Fallback local update
+      setCurrentUser({ ...currentUser, ...updates });
+    }
     setIsEditingProfile(false);
   };
 
@@ -509,7 +486,7 @@ export default function jewtubeApp() {
       u.name.toLowerCase().includes(q) ||
       u.handle.toLowerCase().includes(q) ||
       u.bio.toLowerCase().includes(q) ||
-      u.favoriteTopics.some((t) => t.toLowerCase().includes(q))
+      (u.favoriteTopics || []).some((t) => t.toLowerCase().includes(q))
     );
   });
 
@@ -534,7 +511,7 @@ export default function jewtubeApp() {
           <span className="bg-emerald-600 p-1.5 rounded-lg flex items-center justify-center">
             <Play className="w-4 h-4 fill-white text-white" />
           </span>
-          <span>jewtube</span>
+          <span>YewTube</span>
         </button>
 
         <form onSubmit={handleSearch} className="flex flex-1 max-w-xl mx-4">
@@ -553,7 +530,6 @@ export default function jewtubeApp() {
           </button>
         </form>
 
-        {/* Account / Sign In Button */}
         {currentUser ? (
           <button
             onClick={() => {
@@ -619,13 +595,14 @@ export default function jewtubeApp() {
               setActiveVideo(null);
               setSelectedDirectoryUser(null);
               setTab("users");
+              fetchPlatformUsers();
             }}
             className={`flex items-center gap-4 px-3 py-2.5 rounded-xl text-sm transition text-left ${
               tab === "users" ? "bg-zinc-800 font-semibold text-emerald-400" : "hover:bg-zinc-800/60"
             }`}
           >
             <Globe className="w-5 h-5" />
-            <span>jewtube Users ({accounts.length})</span>
+            <span>YewTube Users ({accounts.length})</span>
           </button>
 
           <div className="my-2 border-t border-zinc-800" />
@@ -917,7 +894,6 @@ export default function jewtubeApp() {
                 </button>
               </div>
 
-              {/* Creator Category Tabs (Videos, Popular, Shorts, Live) */}
               <div className="flex items-center gap-6 border-b border-zinc-800 mb-6">
                 {CHANNEL_TABS.map((ct) => (
                   <button
@@ -982,41 +958,50 @@ export default function jewtubeApp() {
               )}
             </div>
           ) : tab === "users" ? (
-            /* jewtube USERS DIRECTORY PAGE */
+            /* SHARED YEWTUBE USERS DIRECTORY PAGE */
             <div className="max-w-5xl mx-auto space-y-6">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
                   <h1 className="text-2xl font-bold flex items-center gap-2">
                     <Globe className="w-6 h-6 text-emerald-400" />
-                    jewtube Users
+                    YewTube Users
                   </h1>
                   <p className="text-sm text-zinc-400 mt-1">
-                    Search and discover registered creators and members on jewtube.
+                    Search and discover registered accounts across all devices.
                   </p>
                 </div>
 
-                {!currentUser && (
+                <div className="flex items-center gap-2">
                   <button
-                    onClick={() => {
-                      setAuthMode("register");
-                      setTab("auth");
-                    }}
-                    className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-full text-xs font-semibold flex items-center gap-2 self-start"
+                    onClick={fetchPlatformUsers}
+                    className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 px-3.5 py-2 rounded-full text-xs font-semibold flex items-center gap-1.5"
                   >
-                    <UserPlus className="w-4 h-4" />
-                    Join jewtube
+                    <RefreshCw className={`w-3.5 h-3.5 ${loadingUsers ? "animate-spin" : ""}`} />
+                    Refresh
                   </button>
-                )}
+
+                  {!currentUser && (
+                    <button
+                      onClick={() => {
+                        setAuthMode("register");
+                        setTab("auth");
+                      }}
+                      className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-full text-xs font-semibold flex items-center gap-2"
+                    >
+                      <UserPlus className="w-4 h-4" />
+                      Join YewTube
+                    </button>
+                  )}
+                </div>
               </div>
 
-              {/* Search Platform Users */}
               <div className="relative">
                 <Search className="w-4 h-4 text-zinc-400 absolute left-4 top-3.5" />
                 <input
                   type="text"
                   value={userDirectorySearch}
                   onChange={(e) => setUserDirectorySearch(e.target.value)}
-                  placeholder="Search jewtube users by name, @handle, bio, or interests..."
+                  placeholder="Search YewTube users by name, @handle, bio, or interests..."
                   className="w-full bg-zinc-900 border border-zinc-700 rounded-xl pl-11 pr-4 py-3 text-sm focus:outline-none focus:border-emerald-500"
                 />
               </div>
@@ -1046,7 +1031,7 @@ export default function jewtubeApp() {
                     </button>
                   </div>
                   <div className="flex flex-wrap gap-2 pt-2">
-                    {selectedDirectoryUser.favoriteTopics.map((topic) => (
+                    {(selectedDirectoryUser.favoriteTopics || []).map((topic) => (
                       <button
                         key={topic}
                         onClick={() => {
@@ -1063,10 +1048,9 @@ export default function jewtubeApp() {
                 </div>
               )}
 
-              {/* User Cards Grid */}
               {filteredPlatformUsers.length === 0 ? (
                 <p className="text-sm text-zinc-400">
-                  No jewtube users matched &ldquo;{userDirectorySearch}&rdquo;.
+                  No YewTube users matched &ldquo;{userDirectorySearch}&rdquo;.
                 </p>
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -1098,7 +1082,7 @@ export default function jewtubeApp() {
                       <p className="text-xs text-zinc-300 line-clamp-2">{u.bio}</p>
 
                       <div className="flex flex-wrap gap-1.5">
-                        {u.favoriteTopics.slice(0, 3).map((t) => (
+                        {(u.favoriteTopics || []).slice(0, 3).map((t) => (
                           <span
                             key={t}
                             className="bg-zinc-800 text-zinc-300 px-2.5 py-0.5 rounded-full text-[11px]"
@@ -1121,12 +1105,12 @@ export default function jewtubeApp() {
                 </span>
                 <div>
                   <h1 className="text-xl font-bold">
-                    {authMode === "register" ? "Create jewtube Account" : "Sign In to jewtube"}
+                    {authMode === "register" ? "Create YewTube Account" : "Sign In to YewTube"}
                   </h1>
                   <p className="text-xs text-zinc-400">
                     {authMode === "register"
-                      ? "Your profile will appear in jewtube Users"
-                      : "Welcome back to jewtube"}
+                      ? "Your profile will appear publicly in YewTube Users"
+                      : "Welcome back to YewTube"}
                   </p>
                 </div>
               </div>
@@ -1226,9 +1210,14 @@ export default function jewtubeApp() {
 
                 <button
                   type="submit"
-                  className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-2.5 rounded-xl text-sm transition"
+                  disabled={authSubmitting}
+                  className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold py-2.5 rounded-xl text-sm transition"
                 >
-                  {authMode === "register" ? "Create Account" : "Sign In"}
+                  {authSubmitting
+                    ? "Please wait..."
+                    : authMode === "register"
+                    ? "Create Account"
+                    : "Sign In"}
                 </button>
               </form>
 
@@ -1252,7 +1241,7 @@ export default function jewtubeApp() {
               <div className="max-w-md mx-auto mt-10 text-center space-y-4">
                 <h1 className="text-xl font-bold">You are not signed in</h1>
                 <p className="text-sm text-zinc-400">
-                  Create a jewtube account with your email to comment, customize your profile, and appear in jewtube Users.
+                  Create a YewTube account with your email to comment, customize your profile, and appear in YewTube Users across all devices.
                 </p>
                 <button
                   onClick={() => {
@@ -1390,7 +1379,7 @@ export default function jewtubeApp() {
                   </div>
                   {topInterests.length === 0 ? (
                     <p className="text-sm text-zinc-400">
-                      Watch or like videos and your Home feed and jewtube Users profile tags will adapt automatically!
+                      Watch or like videos and your Home feed and YewTube Users profile tags will adapt automatically!
                     </p>
                   ) : (
                     <div className="flex flex-wrap gap-2">
