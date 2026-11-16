@@ -71,14 +71,12 @@ async function fetchFromInvidious(path: string) {
   return null;
 }
 
-// Recursively extract videos, playlist videos, Shorts, and continuation tokens
-function extractVideosAndTokens(
+function extractVideosFromJson(
   root: any,
   fallbackChannelTitle = "",
   fallbackChannelId = ""
 ) {
   const found: any[] = [];
-  const tokens: string[] = [];
   const seen = new Set<string>();
   const stack = [root];
 
@@ -86,15 +84,6 @@ function extractVideosAndTokens(
     const node = stack.pop();
     if (!node || typeof node !== "object") continue;
 
-    // 1. Continuation token for loading more pages
-    const token =
-      node.continuationItemRenderer?.continuationEndpoint?.continuationCommand
-        ?.token;
-    if (token && typeof token === "string" && !tokens.includes(token)) {
-      tokens.push(token);
-    }
-
-    // 2. Standard, Grid, and Playlist Video Renderers
     const v =
       node.videoRenderer ||
       node.gridVideoRenderer ||
@@ -124,13 +113,11 @@ function extractVideosAndTokens(
         viewCount:
           v.shortViewCountText?.simpleText ||
           v.viewCountText?.simpleText ||
-          v.videoInfo?.runs?.map((r: any) => r.text).join("") ||
           "Video",
         isShort: false,
       });
     }
 
-    // 3. YouTube Shorts
     const reel = node.reelItemRenderer;
     if (reel && reel.videoId && !seen.has(reel.videoId)) {
       seen.add(reel.videoId);
@@ -174,109 +161,7 @@ function extractVideosAndTokens(
     }
   }
 
-  return { videos: found, tokens };
-}
-
-// Fetch next batches of videos via YouTube's internal browse continuation endpoint
-async function fetchContinuationPages(
-  apiKey: string,
-  initialTokens: string[],
-  channelTitle: string,
-  channelId: string,
-  maxPages = 6
-) {
-  const extraVideos: any[] = [];
-  let queue = [...initialTokens];
-  let pagesFetched = 0;
-
-  while (queue.length > 0 && pagesFetched < maxPages) {
-    const token = queue.shift()!;
-    pagesFetched++;
-
-    try {
-      const res = await fetch(
-        `https://www.youtube.com/youtubei/v1/browse?key=${encodeURIComponent(apiKey)}`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "User-Agent": BROWSER_HEADERS["User-Agent"],
-          },
-          body: JSON.stringify({
-            context: {
-              client: {
-                clientName: "WEB",
-                clientVersion: "2.20260501.01.00",
-                hl: "en",
-                gl: "US",
-              },
-            },
-            continuation: token,
-          }),
-          cache: "no-store",
-        }
-      );
-
-      if (!res.ok) break;
-      const json = await res.json();
-      const { videos, tokens } = extractVideosAndTokens(
-        json,
-        channelTitle,
-        channelId
-      );
-      extraVideos.push(...videos);
-      for (const t of tokens) {
-        if (!queue.includes(t)) queue.push(t);
-      }
-    } catch {
-      break;
-    }
-  }
-
-  return extraVideos;
-}
-
-// Fetch from the creator's hidden UU... All-Uploads playlist for full catalog coverage
-async function fetchAllUploadsPlaylist(
-  channelId: string,
-  channelTitle: string,
-  maxPages = 5
-) {
-  if (!channelId.startsWith("UC")) return [];
-  const uploadsPlaylistId = `UU${channelId.slice(2)}`;
-
-  try {
-    const res = await fetch(
-      `https://www.youtube.com/playlist?list=${encodeURIComponent(uploadsPlaylistId)}`,
-      { headers: BROWSER_HEADERS, cache: "no-store" }
-    );
-    const html = await res.text();
-    const match = html.match(/var ytInitialData\s*=\s*({.*?});\s*<\/script>/s);
-    const keyMatch = html.match(/"INNERTUBE_API_KEY":"([^"]+)"/);
-    if (!match) return [];
-
-    const data = JSON.parse(match[1]);
-    const { videos, tokens } = extractVideosAndTokens(
-      data,
-      channelTitle,
-      channelId
-    );
-
-    if (keyMatch?.[1] && tokens.length > 0) {
-      const more = await fetchContinuationPages(
-        keyMatch[1],
-        tokens,
-        channelTitle,
-        channelId,
-        maxPages
-      );
-      videos.push(...more);
-    }
-
-    return videos;
-  } catch {
-    return [];
-  }
+  return found;
 }
 
 async function searchYouTubeDirect(query: string) {
@@ -290,7 +175,7 @@ async function searchYouTubeDirect(query: string) {
     if (!match) return { videos: [], channels: [] };
 
     const data = JSON.parse(match[1]);
-    const { videos } = extractVideosAndTokens(data);
+    const videos = extractVideosFromJson(data);
 
     const channels: any[] = [];
     const contents =
@@ -316,15 +201,15 @@ async function searchYouTubeDirect(query: string) {
       }
     }
 
-    return { videos: videos.slice(0, 30), channels: channels.slice(0, 3) };
+    return { videos: videos.slice(0, 35), channels: channels.slice(0, 3) };
   } catch {
     return { videos: [], channels: [] };
   }
 }
 
-async function searchInvidiousFallback(query: string) {
+async function searchInvidiousFallback(query: string, page = 1) {
   const results = await fetchFromInvidious(
-    `/api/v1/search?q=${encodeURIComponent(query)}`
+    `/api/v1/search?q=${encodeURIComponent(query)}&page=${page}`
   );
   if (!Array.isArray(results)) return { videos: [], channels: [] };
 
@@ -351,7 +236,7 @@ async function searchInvidiousFallback(query: string) {
       avatar: c.authorThumbnails?.slice(-1)[0]?.url || "",
     }));
 
-  return { videos: videos.slice(0, 24), channels: channels.slice(0, 3) };
+  return { videos, channels: channels.slice(0, 3) };
 }
 
 async function fetchChannelRssVideos(channelId: string, channelTitle: string) {
@@ -388,27 +273,48 @@ async function fetchChannelRssVideos(channelId: string, channelTitle: string) {
   }
 }
 
-// Fetch ALL creator videos across tab pagination + All-Uploads playlist
-async function fetchChannelData(channelId: string, tab = "videos") {
+// Pull deep catalog of creator videos using parallel multi-angle queries + RSS + channel scrape
+async function fetchChannelData(
+  channelId: string,
+  tab = "videos",
+  knownName = ""
+) {
   const pathSuffix =
     tab === "shorts" ? "/shorts" : tab === "live" ? "/streams" : "/videos";
 
-  let title = "Channel";
+  let title = knownName || "Channel";
   let description = "";
   let avatar = "";
   let banner = "";
   const allVideos: any[] = [];
   const seen = new Set<string>();
 
-  const addUnique = (items: any[]) => {
+  const belongsToCreator = (v: any) => {
+    if (channelId && v.channelId && v.channelId === channelId) return true;
+    if (
+      title &&
+      title !== "Channel" &&
+      v.channelTitle?.toLowerCase().trim() === title.toLowerCase().trim()
+    ) {
+      return true;
+    }
+    return false;
+  };
+
+  const addUnique = (items: any[], strictFilter = false) => {
     for (const item of items) {
-      if (item.id && !seen.has(item.id)) {
-        seen.add(item.id);
-        allVideos.push(item);
-      }
+      if (!item.id || seen.has(item.id)) continue;
+      if (strictFilter && !belongsToCreator(item)) continue;
+      seen.add(item.id);
+      allVideos.push({
+        ...item,
+        channelTitle: title !== "Channel" ? title : item.channelTitle,
+        channelId: channelId || item.channelId,
+      });
     }
   };
 
+  // 1. Scrape the channel tab HTML for header metadata & initial grid
   try {
     const res = await fetch(
       `https://www.youtube.com/channel/${encodeURIComponent(channelId)}${pathSuffix}`,
@@ -416,7 +322,6 @@ async function fetchChannelData(channelId: string, tab = "videos") {
     );
     const html = await res.text();
     const match = html.match(/var ytInitialData\s*=\s*({.*?});\s*<\/script>/s);
-    const keyMatch = html.match(/"INNERTUBE_API_KEY":"([^"]+)"/);
 
     if (match) {
       const data = JSON.parse(match[1]);
@@ -437,36 +342,48 @@ async function fetchChannelData(channelId: string, tab = "videos") {
         header?.banner?.thumbnails?.slice(-1)[0]?.url ||
         "";
 
-      const { videos, tokens } = extractVideosAndTokens(data, title, channelId);
-      addUnique(videos);
-
-      // Follow continuation tokens to load more pages of the creator's tab
-      if (keyMatch?.[1] && tokens.length > 0) {
-        const pagedVideos = await fetchContinuationPages(
-          keyMatch[1],
-          tokens,
-          title,
-          channelId,
-          6
-        );
-        addUnique(pagedVideos);
-      }
+      addUnique(extractVideosFromJson(data, title, channelId), false);
     }
   } catch {
-    // Fall through to playlist / RSS / Invidious
+    // Continue to RSS + parallel search harvest
   }
 
-  // On "videos" or "popular", also merge the creator's full UU... uploads playlist
-  if ((tab === "videos" || tab === "popular") && channelId.startsWith("UC")) {
-    const [playlistVideos, rssVideos] = await Promise.all([
-      fetchAllUploadsPlaylist(channelId, title, 5),
-      fetchChannelRssVideos(channelId, title),
+  // 2. Merge RSS feed (15 newest uploads)
+  if (tab === "videos" && channelId.startsWith("UC")) {
+    const rssVideos = await fetchChannelRssVideos(channelId, title);
+    addUnique(rssVideos, false);
+  }
+
+  // 3. Run parallel multi-angle queries for this exact creator to bypass single-page limits
+  if (title && title !== "Channel") {
+    const querySuffixes =
+      tab === "shorts"
+        ? ["#shorts", "shorts", "funny", "clip"]
+        : tab === "live"
+        ? ["stream", "live", "vod", "full stream"]
+        : ["", "2026", "2025", "2024", "best", "full", "episode", "part"];
+
+    const searchPromises = querySuffixes.map((suffix) =>
+      searchYouTubeDirect(`${title} ${suffix}`.trim())
+    );
+    const invidiousPromises = [1, 2, 3].map((page) =>
+      searchInvidiousFallback(title, page)
+    );
+
+    const [ytBatch, invBatch] = await Promise.all([
+      Promise.all(searchPromises),
+      Promise.all(invidiousPromises),
     ]);
-    addUnique(rssVideos);
-    addUnique(playlistVideos);
+
+    for (const res of ytBatch) {
+      addUnique(res.videos, true);
+    }
+    for (const res of invBatch) {
+      addUnique(res.videos, true);
+    }
   }
 
-  // Sort by view count when "popular" tab is selected
+  // 4. Sort by view count on the "popular" tab
   if (tab === "popular" && allVideos.length > 0) {
     const parseViewNum = (str: string) => {
       const m = (str || "").replace(/,/g, "").match(/([\d.]+)\s*([KMB])?/i);
@@ -485,25 +402,6 @@ async function fetchChannelData(channelId: string, tab = "videos") {
     allVideos.sort((a, b) => parseViewNum(b.viewCount) - parseViewNum(a.viewCount));
   }
 
-  if (allVideos.length === 0) {
-    const invChannel = await fetchFromInvidious(`/api/v1/channels/${channelId}`);
-    if (invChannel?.latestVideos) {
-      title = invChannel.author || title;
-      description = invChannel.description || description;
-      avatar = invChannel.authorThumbnails?.slice(-1)[0]?.url || avatar;
-      addUnique(
-        invChannel.latestVideos.map((v: any) => ({
-          id: v.videoId,
-          title: v.title,
-          thumbnail: `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`,
-          channelTitle: title,
-          channelId,
-          viewCount: formatViews(v.viewCount),
-        }))
-      );
-    }
-  }
-
   return {
     channel: {
       id: channelId,
@@ -512,7 +410,7 @@ async function fetchChannelData(channelId: string, tab = "videos") {
       avatar: avatar.startsWith("//") ? `https:${avatar}` : avatar,
       banner: banner.startsWith("//") ? `https:${banner}` : banner,
     },
-    videos: allVideos.slice(0, 200),
+    videos: allVideos.slice(0, 150),
   };
 }
 
@@ -542,7 +440,11 @@ export async function GET(req: NextRequest) {
     }
 
     if (targetId) {
-      const channelData = await fetchChannelData(targetId, channelTab);
+      const channelData = await fetchChannelData(
+        targetId,
+        channelTab,
+        channelName || ""
+      );
       if (channelData) {
         if (fallbackInfo) {
           channelData.channel.avatar =
