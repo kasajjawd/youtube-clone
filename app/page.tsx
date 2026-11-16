@@ -15,23 +15,40 @@ import {
   Check,
   Edit3,
   ArrowLeft,
+  LogOut,
+  LogIn,
+  Mail,
+  Lock,
+  UserPlus,
+  Globe,
 } from "lucide-react";
 
 const CATEGORIES = ["For You", "Trending", "Music", "Gaming", "Programming", "4K HDR", "News"];
+const CHANNEL_TABS = [
+  { id: "videos", label: "Videos" },
+  { id: "popular", label: "Popular" },
+  { id: "shorts", label: "Shorts" },
+  { id: "live", label: "Live" },
+];
 const AVATAR_COLORS = [
+  "bg-emerald-600",
   "bg-red-600",
   "bg-blue-600",
-  "bg-emerald-600",
   "bg-purple-600",
   "bg-amber-600",
   "bg-pink-600",
 ];
 
-interface UserProfile {
+interface PlatformAccount {
+  id: string;
+  email: string;
+  password: string;
   name: string;
   handle: string;
   color: string;
   bio: string;
+  joinedAt: string;
+  favoriteTopics: string[];
 }
 
 interface VideoItem {
@@ -42,6 +59,7 @@ interface VideoItem {
   channelTitle: string;
   channelId?: string;
   viewCount?: string;
+  isShort?: boolean;
 }
 
 interface ChannelInfo {
@@ -54,12 +72,57 @@ interface ChannelInfo {
   subscribers?: string;
 }
 
-type TabView = "home" | "subscriptions" | "history" | "liked" | "account" | "channel";
+const DEFAULT_COMMUNITY_USERS: PlatformAccount[] = [
+  {
+    id: "user-1",
+    email: "alex@jewtube.app",
+    password: "demo",
+    name: "Alex Rivera",
+    handle: "@alexbuilds",
+    color: "bg-blue-600",
+    bio: "Full-stack tinkerer, mechanical keyboards, and late-night lofi.",
+    joinedAt: "2026-01-12",
+    favoriteTopics: ["Programming", "Tech", "Lofi"],
+  },
+  {
+    id: "user-2",
+    email: "maya@jewtube.app",
+    password: "demo",
+    name: "Maya Lin",
+    handle: "@mayagames",
+    color: "bg-purple-600",
+    bio: "Variety gaming streams, speedruns, and indie reviews.",
+    joinedAt: "2026-02-04",
+    favoriteTopics: ["Gaming", "Speedruns", "Indie"],
+  },
+  {
+    id: "user-3",
+    email: "sam@jewtube.app",
+    password: "demo",
+    name: "Samir Patel",
+    handle: "@samir4k",
+    color: "bg-emerald-600",
+    bio: "Cinematography, 4K HDR travel films, and sound design.",
+    joinedAt: "2026-03-19",
+    favoriteTopics: ["4K HDR", "Travel", "Filmmaking"],
+  },
+];
 
-export default function YouTubeApp() {
+type TabView =
+  | "home"
+  | "subscriptions"
+  | "history"
+  | "liked"
+  | "account"
+  | "channel"
+  | "users"
+  | "auth";
+
+export default function jewtubeApp() {
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [matchedChannels, setMatchedChannels] = useState<ChannelInfo[]>([]);
   const [activeChannel, setActiveChannel] = useState<ChannelInfo | null>(null);
+  const [channelCategoryTab, setChannelCategoryTab] = useState("videos");
   const [activeVideo, setActiveVideo] = useState<VideoItem | null>(null);
   const [comments, setComments] = useState<any[]>([]);
   const [newComment, setNewComment] = useState("");
@@ -68,34 +131,57 @@ export default function YouTubeApp() {
   const [tab, setTab] = useState<TabView>("home");
   const [loading, setLoading] = useState(true);
 
-  // Account & Personalization State
-  const [profile, setProfile] = useState<UserProfile>({
-    name: "Guest Creator",
-    handle: "@guestcreator",
-    color: "bg-red-600",
-    bio: "Exploring videos and building playlists.",
-  });
+  // Platform Accounts & Email Auth State
+  const [accounts, setAccounts] = useState<PlatformAccount[]>(DEFAULT_COMMUNITY_USERS);
+  const [currentUser, setCurrentUser] = useState<PlatformAccount | null>(null);
+  const [userDirectorySearch, setUserDirectorySearch] = useState("");
+  const [selectedDirectoryUser, setSelectedDirectoryUser] = useState<PlatformAccount | null>(
+    null
+  );
+
+  // Auth Form State (Sign In / Register)
+  const [authMode, setAuthMode] = useState<"signin" | "register">("register");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authName, setAuthName] = useState("");
+  const [authHandle, setAuthHandle] = useState("");
+  const [authBio, setAuthBio] = useState("");
+  const [authColor, setAuthColor] = useState("bg-emerald-600");
+  const [authError, setAuthError] = useState("");
+
+  // Edit Profile State
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [editName, setEditName] = useState("");
   const [editHandle, setEditHandle] = useState("");
   const [editBio, setEditBio] = useState("");
-  const [editColor, setEditColor] = useState("bg-red-600");
+  const [editColor, setEditColor] = useState("bg-emerald-600");
 
+  // User Activity State
   const [history, setHistory] = useState<VideoItem[]>([]);
   const [likedVideos, setLikedVideos] = useState<VideoItem[]>([]);
   const [subscriptions, setSubscriptions] = useState<string[]>([]);
   const [interestScores, setInterestScores] = useState<Record<string, number>>({});
   const [hydrated, setHydrated] = useState(false);
 
+  // Load saved accounts & activity from localStorage
   useEffect(() => {
     try {
-      const savedProfile = localStorage.getItem("yt_profile");
-      const savedHistory = localStorage.getItem("yt_history");
-      const savedLiked = localStorage.getItem("yt_liked");
-      const savedSubs = localStorage.getItem("yt_subs");
-      const savedInterests = localStorage.getItem("yt_interests");
+      const savedAccounts = localStorage.getItem("jewtube_accounts");
+      const savedCurrentUserId = localStorage.getItem("jewtube_current_user_id");
+      const savedHistory = localStorage.getItem("jewtube_history");
+      const savedLiked = localStorage.getItem("jewtube_liked");
+      const savedSubs = localStorage.getItem("jewtube_subs");
+      const savedInterests = localStorage.getItem("jewtube_interests");
 
-      if (savedProfile) setProfile(JSON.parse(savedProfile));
+      const loadedAccounts: PlatformAccount[] = savedAccounts
+        ? JSON.parse(savedAccounts)
+        : DEFAULT_COMMUNITY_USERS;
+      setAccounts(loadedAccounts);
+
+      if (savedCurrentUserId) {
+        const found = loadedAccounts.find((a) => a.id === savedCurrentUserId) || null;
+        setCurrentUser(found);
+      }
       if (savedHistory) setHistory(JSON.parse(savedHistory));
       if (savedLiked) setLikedVideos(JSON.parse(savedLiked));
       if (savedSubs) setSubscriptions(JSON.parse(savedSubs));
@@ -106,14 +192,20 @@ export default function YouTubeApp() {
     setHydrated(true);
   }, []);
 
+  // Persist changes
   useEffect(() => {
     if (!hydrated) return;
-    localStorage.setItem("yt_profile", JSON.stringify(profile));
-    localStorage.setItem("yt_history", JSON.stringify(history));
-    localStorage.setItem("yt_liked", JSON.stringify(likedVideos));
-    localStorage.setItem("yt_subs", JSON.stringify(subscriptions));
-    localStorage.setItem("yt_interests", JSON.stringify(interestScores));
-  }, [profile, history, likedVideos, subscriptions, interestScores, hydrated]);
+    localStorage.setItem("jewtube_accounts", JSON.stringify(accounts));
+    if (currentUser) {
+      localStorage.setItem("jewtube_current_user_id", currentUser.id);
+    } else {
+      localStorage.removeItem("jewtube_current_user_id");
+    }
+    localStorage.setItem("jewtube_history", JSON.stringify(history));
+    localStorage.setItem("jewtube_liked", JSON.stringify(likedVideos));
+    localStorage.setItem("jewtube_subs", JSON.stringify(subscriptions));
+    localStorage.setItem("jewtube_interests", JSON.stringify(interestScores));
+  }, [accounts, currentUser, history, likedVideos, subscriptions, interestScores, hydrated]);
 
   const buildPersonalizedQuery = () => {
     const topKeywords = Object.entries(interestScores)
@@ -142,6 +234,18 @@ export default function YouTubeApp() {
       words.forEach((word) => {
         updated[word] = (updated[word] || 0) + weight;
       });
+
+      // Sync top topics onto the logged-in user's public directory profile
+      if (currentUser) {
+        const top3 = Object.entries(updated)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 3)
+          .map(([k]) => k.charAt(0).toUpperCase() + k.slice(1));
+        setAccounts((accs) =>
+          accs.map((a) => (a.id === currentUser.id ? { ...a, favoriteTopics: top3 } : a))
+        );
+      }
+
       return updated;
     });
   };
@@ -166,23 +270,34 @@ export default function YouTubeApp() {
     fetchVideos(buildPersonalizedQuery());
   }, [hydrated]);
 
-  // Open a creator's YouTube Channel Page
-  const openChannel = async (channelName: string, channelId?: string) => {
+  // Open a creator's Channel Page with category tab support
+  const openChannel = async (
+    channelName: string,
+    channelId?: string,
+    selectedTab = "videos"
+  ) => {
     setActiveVideo(null);
     setTab("channel");
+    setChannelCategoryTab(selectedTab);
     setLoading(true);
-    setActiveChannel({
-      id: channelId || "",
-      title: channelName,
-      description: "Loading channel videos...",
-    });
+    setActiveChannel((prev) =>
+      prev && (prev.id === channelId || prev.title === channelName)
+        ? prev
+        : {
+            id: channelId || "",
+            title: channelName,
+            description: "Loading channel videos...",
+          }
+    );
     window.scrollTo({ top: 0, behavior: "smooth" });
 
     try {
       const param = channelId
         ? `channelId=${encodeURIComponent(channelId)}`
         : `channelName=${encodeURIComponent(channelName)}`;
-      const res = await fetch(`/api/youtube?${param}`);
+      const res = await fetch(
+        `/api/youtube?${param}&tab=${encodeURIComponent(selectedTab)}`
+      );
       const data = await res.json();
       if (data.channel) setActiveChannel(data.channel);
       setVideos(data.videos || []);
@@ -230,10 +345,16 @@ export default function YouTubeApp() {
   const handleAddComment = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newComment.trim()) return;
+    if (!currentUser) {
+      setTab("auth");
+      setAuthMode("signin");
+      setAuthError("Sign in with your email to post comments.");
+      return;
+    }
     setComments((prev) => [
       {
         id: `local-${Date.now()}`,
-        author: profile.handle,
+        author: currentUser.handle,
         text: newComment.trim(),
         likes: 1,
         isOwn: true,
@@ -241,6 +362,65 @@ export default function YouTubeApp() {
       ...prev,
     ]);
     setNewComment("");
+  };
+
+  // Email Registration & Sign-In Handler
+  const handleAuthSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError("");
+    const emailClean = authEmail.trim().toLowerCase();
+
+    if (!emailClean || !emailClean.includes("@")) {
+      setAuthError("Please enter a valid email address.");
+      return;
+    }
+    if (authPassword.trim().length < 4) {
+      setAuthError("Password must be at least 4 characters.");
+      return;
+    }
+
+    if (authMode === "signin") {
+      const matched = accounts.find(
+        (a) => a.email.toLowerCase() === emailClean && a.password === authPassword
+      );
+      if (!matched) {
+        setAuthError("No account found with that email and password.");
+        return;
+      }
+      setCurrentUser(matched);
+      setTab("account");
+      setAuthEmail("");
+      setAuthPassword("");
+    } else {
+      if (accounts.some((a) => a.email.toLowerCase() === emailClean)) {
+        setAuthError("An account with this email already exists. Try signing in.");
+        return;
+      }
+      const cleanName = authName.trim() || emailClean.split("@")[0];
+      const rawHandle = authHandle.trim() || cleanName.toLowerCase().replace(/\s+/g, "");
+      const formattedHandle = rawHandle.startsWith("@") ? rawHandle : `@${rawHandle}`;
+
+      const newAccount: PlatformAccount = {
+        id: `user-${Date.now()}`,
+        email: emailClean,
+        password: authPassword,
+        name: cleanName,
+        handle: formattedHandle,
+        color: authColor,
+        bio: authBio.trim() || "New jewtube creator and viewer.",
+        joinedAt: new Date().toISOString().slice(0, 10),
+        favoriteTopics: ["Trending"],
+      };
+
+      setAccounts((prev) => [newAccount, ...prev]);
+      setCurrentUser(newAccount);
+      setTab("account");
+      setAuthEmail("");
+      setAuthPassword("");
+      setAuthName("");
+      setAuthHandle("");
+      setAuthBio("");
+    }
   };
 
   const handleSearch = (e: React.FormEvent) => {
@@ -292,30 +472,46 @@ export default function YouTubeApp() {
   };
 
   const startEditingProfile = () => {
-    setEditName(profile.name);
-    setEditHandle(profile.handle);
-    setEditBio(profile.bio);
-    setEditColor(profile.color);
+    if (!currentUser) return;
+    setEditName(currentUser.name);
+    setEditHandle(currentUser.handle);
+    setEditBio(currentUser.bio);
+    setEditColor(currentUser.color);
     setIsEditingProfile(true);
   };
 
   const saveProfile = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!currentUser) return;
     const formattedHandle = editHandle.startsWith("@")
       ? editHandle.trim()
       : `@${editHandle.trim().replace(/\s+/g, "")}`;
-    setProfile({
-      name: editName.trim() || "Creator",
-      handle: formattedHandle || "@creator",
+    const updated: PlatformAccount = {
+      ...currentUser,
+      name: editName.trim() || currentUser.name,
+      handle: formattedHandle || currentUser.handle,
       bio: editBio.trim(),
       color: editColor,
-    });
+    };
+    setCurrentUser(updated);
+    setAccounts((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
     setIsEditingProfile(false);
   };
 
   const topInterests = Object.entries(interestScores)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 8);
+
+  const filteredPlatformUsers = accounts.filter((u) => {
+    const q = userDirectorySearch.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      u.name.toLowerCase().includes(q) ||
+      u.handle.toLowerCase().includes(q) ||
+      u.bio.toLowerCase().includes(q) ||
+      u.favoriteTopics.some((t) => t.toLowerCase().includes(q))
+    );
+  });
 
   const isLiked = activeVideo ? likedVideos.some((v) => v.id === activeVideo.id) : false;
   const isSubscribed = activeVideo
@@ -335,10 +531,10 @@ export default function YouTubeApp() {
           }}
           className="flex items-center gap-1.5 font-bold text-xl tracking-tight"
         >
-          <span className="bg-red-600 p-1.5 rounded-lg flex items-center justify-center">
+          <span className="bg-emerald-600 p-1.5 rounded-lg flex items-center justify-center">
             <Play className="w-4 h-4 fill-white text-white" />
           </span>
-          <span>YouTube</span>
+          <span>jewtube</span>
         </button>
 
         <form onSubmit={handleSearch} className="flex flex-1 max-w-xl mx-4">
@@ -346,8 +542,8 @@ export default function YouTubeApp() {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search videos or channels (e.g. Joe Bart)..."
-            className="w-full bg-[#121212] border border-zinc-700 rounded-l-full px-4 py-1.5 text-sm focus:outline-none focus:border-blue-500"
+            placeholder="Search videos or creators (e.g. Joe Bart)..."
+            className="w-full bg-[#121212] border border-zinc-700 rounded-l-full px-4 py-1.5 text-sm focus:outline-none focus:border-emerald-500"
           />
           <button
             type="submit"
@@ -357,22 +553,38 @@ export default function YouTubeApp() {
           </button>
         </form>
 
-        <button
-          onClick={() => {
-            setActiveVideo(null);
-            setTab("account");
-          }}
-          className="flex items-center gap-2 hover:bg-zinc-800 py-1 px-2.5 rounded-full transition"
-        >
-          <span className="hidden sm:inline text-xs font-medium text-zinc-300">
-            {profile.name}
-          </span>
-          <div
-            className={`w-8 h-8 rounded-full ${profile.color} flex items-center justify-center font-bold text-sm`}
+        {/* Account / Sign In Button */}
+        {currentUser ? (
+          <button
+            onClick={() => {
+              setActiveVideo(null);
+              setTab("account");
+            }}
+            className="flex items-center gap-2 hover:bg-zinc-800 py-1 px-2.5 rounded-full transition"
           >
-            {profile.name[0]?.toUpperCase()}
-          </div>
-        </button>
+            <span className="hidden sm:inline text-xs font-medium text-zinc-300">
+              {currentUser.name}
+            </span>
+            <div
+              className={`w-8 h-8 rounded-full ${currentUser.color} flex items-center justify-center font-bold text-sm`}
+            >
+              {currentUser.name[0]?.toUpperCase()}
+            </div>
+          </button>
+        ) : (
+          <button
+            onClick={() => {
+              setActiveVideo(null);
+              setAuthMode("signin");
+              setAuthError("");
+              setTab("auth");
+            }}
+            className="flex items-center gap-2 border border-emerald-500/60 text-emerald-400 hover:bg-emerald-500/10 px-3.5 py-1.5 rounded-full text-xs font-semibold transition"
+          >
+            <LogIn className="w-4 h-4" />
+            <span>Sign In</span>
+          </button>
+        )}
       </header>
 
       <div className="flex flex-1">
@@ -402,6 +614,20 @@ export default function YouTubeApp() {
             <span>Subscriptions ({subscriptions.length})</span>
           </button>
 
+          <button
+            onClick={() => {
+              setActiveVideo(null);
+              setSelectedDirectoryUser(null);
+              setTab("users");
+            }}
+            className={`flex items-center gap-4 px-3 py-2.5 rounded-xl text-sm transition text-left ${
+              tab === "users" ? "bg-zinc-800 font-semibold text-emerald-400" : "hover:bg-zinc-800/60"
+            }`}
+          >
+            <Globe className="w-5 h-5" />
+            <span>jewtube Users ({accounts.length})</span>
+          </button>
+
           <div className="my-2 border-t border-zinc-800" />
           <p className="px-3 py-1 text-xs font-semibold text-zinc-400 uppercase tracking-wider">
             You
@@ -410,14 +636,16 @@ export default function YouTubeApp() {
           <button
             onClick={() => {
               setActiveVideo(null);
-              setTab("account");
+              setTab(currentUser ? "account" : "auth");
             }}
             className={`flex items-center gap-4 px-3 py-2.5 rounded-xl text-sm transition text-left ${
-              tab === "account" ? "bg-zinc-800 font-semibold" : "hover:bg-zinc-800/60"
+              tab === "account" || tab === "auth"
+                ? "bg-zinc-800 font-semibold"
+                : "hover:bg-zinc-800/60"
             }`}
           >
             <User className="w-5 h-5" />
-            <span>Your Channel</span>
+            <span>{currentUser ? "Your Account" : "Create Account"}</span>
           </button>
 
           <button
@@ -490,7 +718,7 @@ export default function YouTubeApp() {
                   <div className="flex items-center gap-3">
                     <button
                       onClick={() =>
-                        openChannel(activeVideo.channelTitle, activeVideo.channelId)
+                        openChannel(activeVideo.channelTitle, activeVideo.channelId, "videos")
                       }
                       className="flex items-center gap-3 text-left group"
                     >
@@ -498,7 +726,7 @@ export default function YouTubeApp() {
                         {activeVideo.channelTitle?.[0]}
                       </div>
                       <div>
-                        <p className="font-semibold text-sm group-hover:text-blue-400 transition">
+                        <p className="font-semibold text-sm group-hover:text-emerald-400 transition">
                           {activeVideo.channelTitle}
                         </p>
                         <p className="text-xs text-zinc-400">{activeVideo.viewCount}</p>
@@ -521,7 +749,7 @@ export default function YouTubeApp() {
                     <button
                       onClick={() => toggleLike(activeVideo)}
                       className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition ${
-                        isLiked ? "bg-blue-600 text-white" : "bg-zinc-800 hover:bg-zinc-700"
+                        isLiked ? "bg-emerald-600 text-white" : "bg-zinc-800 hover:bg-zinc-700"
                       }`}
                     >
                       <ThumbsUp className="w-4 h-4" />
@@ -539,7 +767,6 @@ export default function YouTubeApp() {
                   </div>
                 </div>
 
-                {/* Description */}
                 <div className="bg-zinc-900 rounded-xl p-3 mt-3 text-sm text-zinc-300 whitespace-pre-line">
                   {activeVideo.description || "No description available."}
                 </div>
@@ -549,21 +776,27 @@ export default function YouTubeApp() {
                   <h3 className="font-bold mb-4">{comments.length} Comments</h3>
                   <form onSubmit={handleAddComment} className="flex gap-3 mb-6">
                     <div
-                      className={`w-9 h-9 rounded-full ${profile.color} flex items-center justify-center font-bold text-sm shrink-0`}
+                      className={`w-9 h-9 rounded-full ${
+                        currentUser?.color || "bg-zinc-700"
+                      } flex items-center justify-center font-bold text-sm shrink-0`}
                     >
-                      {profile.name[0]?.toUpperCase()}
+                      {currentUser ? currentUser.name[0]?.toUpperCase() : "?"}
                     </div>
                     <div className="flex-1 flex gap-2">
                       <input
                         type="text"
                         value={newComment}
                         onChange={(e) => setNewComment(e.target.value)}
-                        placeholder={`Commenting as ${profile.handle}...`}
+                        placeholder={
+                          currentUser
+                            ? `Commenting as ${currentUser.handle}...`
+                            : "Sign in to comment..."
+                        }
                         className="flex-1 bg-transparent border-b border-zinc-700 focus:border-white pb-1 text-sm focus:outline-none"
                       />
                       <button
                         type="submit"
-                        className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-1.5 rounded-full text-xs font-semibold"
+                        className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-1.5 rounded-full text-xs font-semibold"
                       >
                         Comment
                       </button>
@@ -575,7 +808,7 @@ export default function YouTubeApp() {
                       <div key={c.id} className="flex gap-3 text-sm">
                         <div
                           className={`w-8 h-8 rounded-full ${
-                            c.isOwn ? profile.color : "bg-zinc-800"
+                            c.isOwn ? currentUser?.color || "bg-emerald-600" : "bg-zinc-800"
                           } flex items-center justify-center shrink-0 font-bold text-xs`}
                         >
                           {c.author?.[1]?.toUpperCase() || c.author?.[0]?.toUpperCase() || "U"}
@@ -606,12 +839,12 @@ export default function YouTubeApp() {
                       <div className="min-w-0">
                         <p
                           onClick={() => openVideo(v)}
-                          className="text-sm font-medium line-clamp-2 group-hover:text-blue-400 cursor-pointer"
+                          className="text-sm font-medium line-clamp-2 group-hover:text-emerald-400 cursor-pointer"
                         >
                           {v.title}
                         </p>
                         <button
-                          onClick={() => openChannel(v.channelTitle, v.channelId)}
+                          onClick={() => openChannel(v.channelTitle, v.channelId, "videos")}
                           className="text-xs text-zinc-400 hover:text-white mt-1 block text-left"
                         >
                           {v.channelTitle}
@@ -623,7 +856,7 @@ export default function YouTubeApp() {
               </div>
             </div>
           ) : tab === "channel" && activeChannel ? (
-            /* REAL YOUTUBE CREATOR CHANNEL PAGE */
+            /* CREATOR CHANNEL PAGE WITH CATEGORY TABS */
             <div className="max-w-6xl mx-auto">
               <button
                 onClick={() => {
@@ -636,7 +869,6 @@ export default function YouTubeApp() {
                 Back to Feed
               </button>
 
-              {/* Channel Banner */}
               {activeChannel.banner && (
                 <div className="w-full h-36 sm:h-48 rounded-2xl overflow-hidden bg-zinc-800 mb-5">
                   <img
@@ -647,8 +879,7 @@ export default function YouTubeApp() {
                 </div>
               )}
 
-              {/* Channel Header */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-zinc-800 mb-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5">
                 <div className="flex items-center gap-4">
                   {activeChannel.avatar ? (
                     <img
@@ -686,17 +917,41 @@ export default function YouTubeApp() {
                 </button>
               </div>
 
-              <h2 className="font-bold text-lg mb-4">Videos</h2>
+              {/* Creator Category Tabs (Videos, Popular, Shorts, Live) */}
+              <div className="flex items-center gap-6 border-b border-zinc-800 mb-6">
+                {CHANNEL_TABS.map((ct) => (
+                  <button
+                    key={ct.id}
+                    onClick={() =>
+                      openChannel(activeChannel.title, activeChannel.id, ct.id)
+                    }
+                    className={`pb-3 text-sm font-semibold border-b-2 transition ${
+                      channelCategoryTab === ct.id
+                        ? "border-white text-white"
+                        : "border-transparent text-zinc-400 hover:text-zinc-200"
+                    }`}
+                  >
+                    {ct.label}
+                  </button>
+                ))}
+                <span className="ml-auto text-xs text-zinc-500 pb-3">
+                  {!loading && `${videos.length} videos`}
+                </span>
+              </div>
 
               {loading ? (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                  {[...Array(8)].map((_, i) => (
+                  {[...Array(12)].map((_, i) => (
                     <div key={i} className="animate-pulse">
                       <div className="aspect-video bg-zinc-800 rounded-xl" />
                       <div className="h-4 bg-zinc-800 rounded mt-3 w-3/4" />
                     </div>
                   ))}
                 </div>
+              ) : videos.length === 0 ? (
+                <p className="text-sm text-zinc-400">
+                  No videos found in this category for {activeChannel.title}.
+                </p>
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-x-4 gap-y-7">
                   {videos.map((video) => (
@@ -705,14 +960,19 @@ export default function YouTubeApp() {
                       onClick={() => openVideo(video)}
                       className="cursor-pointer group"
                     >
-                      <div className="aspect-video rounded-xl overflow-hidden bg-zinc-800">
+                      <div className="aspect-video rounded-xl overflow-hidden bg-zinc-800 relative">
                         <img
                           src={video.thumbnail}
                           alt={video.title}
                           className="w-full h-full object-cover group-hover:scale-105 transition duration-200"
                         />
+                        {video.isShort && (
+                          <span className="absolute bottom-2 right-2 bg-black/80 text-[10px] font-bold px-1.5 py-0.5 rounded">
+                            SHORT
+                          </span>
+                        )}
                       </div>
-                      <h3 className="font-semibold text-sm line-clamp-2 mt-2.5 leading-snug">
+                      <h3 className="font-semibold text-sm line-clamp-2 mt-2.5 leading-snug group-hover:text-emerald-400">
                         {video.title}
                       </h3>
                       <p className="text-xs text-zinc-400 mt-1">{video.viewCount}</p>
@@ -721,125 +981,72 @@ export default function YouTubeApp() {
                 </div>
               )}
             </div>
-          ) : tab === "account" ? (
-            /* YOUR ACCOUNT / CHANNEL PAGE */
-            <div className="max-w-5xl mx-auto space-y-8">
-              <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6">
-                <div className="flex items-center gap-5">
-                  <div
-                    className={`w-20 h-20 rounded-full ${profile.color} flex items-center justify-center text-3xl font-bold shrink-0`}
-                  >
-                    {profile.name[0]?.toUpperCase()}
-                  </div>
-                  <div>
-                    <h1 className="text-2xl font-bold">{profile.name}</h1>
-                    <p className="text-sm text-zinc-400">
-                      {profile.handle} • {subscriptions.length} subscriptions • {history.length} watched
-                    </p>
-                    <p className="text-sm text-zinc-300 mt-1.5">{profile.bio}</p>
-                  </div>
+          ) : tab === "users" ? (
+            /* jewtube USERS DIRECTORY PAGE */
+            <div className="max-w-5xl mx-auto space-y-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <h1 className="text-2xl font-bold flex items-center gap-2">
+                    <Globe className="w-6 h-6 text-emerald-400" />
+                    jewtube Users
+                  </h1>
+                  <p className="text-sm text-zinc-400 mt-1">
+                    Search and discover registered creators and members on jewtube.
+                  </p>
                 </div>
 
-                <button
-                  onClick={startEditingProfile}
-                  className="flex items-center gap-2 bg-zinc-800 hover:bg-zinc-700 px-4 py-2 rounded-full text-sm font-medium"
-                >
-                  <Edit3 className="w-4 h-4" />
-                  <span>Customize Profile</span>
-                </button>
+                {!currentUser && (
+                  <button
+                    onClick={() => {
+                      setAuthMode("register");
+                      setTab("auth");
+                    }}
+                    className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-full text-xs font-semibold flex items-center gap-2 self-start"
+                  >
+                    <UserPlus className="w-4 h-4" />
+                    Join jewtube
+                  </button>
+                )}
               </div>
 
-              {isEditingProfile && (
-                <form
-                  onSubmit={saveProfile}
-                  className="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 space-y-4"
-                >
-                  <h2 className="font-bold text-lg">Customize Your Account</h2>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                      <label className="text-xs text-zinc-400 block mb-1">Display Name</label>
-                      <input
-                        type="text"
-                        value={editName}
-                        onChange={(e) => setEditName(e.target.value)}
-                        className="w-full bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-sm"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs text-zinc-400 block mb-1">Handle</label>
-                      <input
-                        type="text"
-                        value={editHandle}
-                        onChange={(e) => setEditHandle(e.target.value)}
-                        className="w-full bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-sm"
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="text-xs text-zinc-400 block mb-1">Channel Bio</label>
-                    <input
-                      type="text"
-                      value={editBio}
-                      onChange={(e) => setEditBio(e.target.value)}
-                      className="w-full bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-zinc-400 block mb-2">Avatar Color</label>
-                    <div className="flex gap-2">
-                      {AVATAR_COLORS.map((c) => (
-                        <button
-                          type="button"
-                          key={c}
-                          onClick={() => setEditColor(c)}
-                          className={`w-8 h-8 rounded-full ${c} flex items-center justify-center`}
-                        >
-                          {editColor === c && <Check className="w-4 h-4 text-white" />}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="flex gap-2 pt-2">
-                    <button
-                      type="submit"
-                      className="bg-white text-black px-5 py-2 rounded-full text-sm font-semibold"
-                    >
-                      Save Changes
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setIsEditingProfile(false)}
-                      className="bg-zinc-800 px-5 py-2 rounded-full text-sm"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </form>
-              )}
+              {/* Search Platform Users */}
+              <div className="relative">
+                <Search className="w-4 h-4 text-zinc-400 absolute left-4 top-3.5" />
+                <input
+                  type="text"
+                  value={userDirectorySearch}
+                  onChange={(e) => setUserDirectorySearch(e.target.value)}
+                  placeholder="Search jewtube users by name, @handle, bio, or interests..."
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded-xl pl-11 pr-4 py-3 text-sm focus:outline-none focus:border-emerald-500"
+                />
+              </div>
 
-              <div className="bg-zinc-900/70 border border-zinc-800 rounded-2xl p-5">
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-2">
-                    <Sparkles className="w-5 h-5 text-amber-400" />
-                    <h2 className="font-bold">Your Recommendation Algorithm</h2>
-                  </div>
-                  {topInterests.length > 0 && (
+              {selectedDirectoryUser && (
+                <div className="bg-zinc-900 border border-emerald-500/40 rounded-2xl p-6 space-y-4">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex items-center gap-4">
+                      <div
+                        className={`w-16 h-16 rounded-full ${selectedDirectoryUser.color} flex items-center justify-center text-2xl font-bold shrink-0`}
+                      >
+                        {selectedDirectoryUser.name[0]?.toUpperCase()}
+                      </div>
+                      <div>
+                        <h2 className="text-xl font-bold">{selectedDirectoryUser.name}</h2>
+                        <p className="text-xs text-zinc-400">
+                          {selectedDirectoryUser.handle} • Joined {selectedDirectoryUser.joinedAt}
+                        </p>
+                        <p className="text-sm text-zinc-200 mt-2">{selectedDirectoryUser.bio}</p>
+                      </div>
+                    </div>
                     <button
-                      onClick={() => setInterestScores({})}
-                      className="text-xs text-zinc-400 hover:text-white flex items-center gap-1"
+                      onClick={() => setSelectedDirectoryUser(null)}
+                      className="text-xs text-zinc-400 hover:text-white"
                     >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      Reset Algorithm
+                      Close
                     </button>
-                  )}
-                </div>
-                {topInterests.length === 0 ? (
-                  <p className="text-sm text-zinc-400">
-                    Watch or like a few videos and your Home feed will automatically adapt to your taste!
-                  </p>
-                ) : (
-                  <div className="flex flex-wrap gap-2">
-                    {topInterests.map(([topic, score]) => (
+                  </div>
+                  <div className="flex flex-wrap gap-2 pt-2">
+                    {selectedDirectoryUser.favoriteTopics.map((topic) => (
                       <button
                         key={topic}
                         onClick={() => {
@@ -847,51 +1054,365 @@ export default function YouTubeApp() {
                           setCategory("");
                           fetchVideos(topic);
                         }}
-                        className="bg-zinc-800 hover:bg-zinc-700 px-3 py-1.5 rounded-full text-xs flex items-center gap-2"
+                        className="bg-zinc-800 hover:bg-zinc-700 px-3 py-1 rounded-full text-xs text-emerald-400"
                       >
-                        <span className="capitalize font-medium">{topic}</span>
-                        <span className="text-zinc-400">+{score}</span>
+                        #{topic}
                       </button>
                     ))}
                   </div>
-                )}
+                </div>
+              )}
+
+              {/* User Cards Grid */}
+              {filteredPlatformUsers.length === 0 ? (
+                <p className="text-sm text-zinc-400">
+                  No jewtube users matched &ldquo;{userDirectorySearch}&rdquo;.
+                </p>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {filteredPlatformUsers.map((u) => (
+                    <div
+                      key={u.id}
+                      onClick={() => setSelectedDirectoryUser(u)}
+                      className="bg-zinc-900/90 hover:bg-zinc-800/90 border border-zinc-800 rounded-2xl p-5 cursor-pointer transition flex flex-col justify-between gap-4"
+                    >
+                      <div className="flex items-center gap-3.5">
+                        <div
+                          className={`w-12 h-12 rounded-full ${u.color} flex items-center justify-center text-lg font-bold shrink-0`}
+                        >
+                          {u.name[0]?.toUpperCase()}
+                        </div>
+                        <div className="min-w-0">
+                          <h3 className="font-bold text-base truncate flex items-center gap-2">
+                            {u.name}
+                            {currentUser?.id === u.id && (
+                              <span className="text-[10px] bg-emerald-600/30 text-emerald-300 px-2 py-0.5 rounded-full">
+                                You
+                              </span>
+                            )}
+                          </h3>
+                          <p className="text-xs text-zinc-400 truncate">{u.handle}</p>
+                        </div>
+                      </div>
+
+                      <p className="text-xs text-zinc-300 line-clamp-2">{u.bio}</p>
+
+                      <div className="flex flex-wrap gap-1.5">
+                        {u.favoriteTopics.slice(0, 3).map((t) => (
+                          <span
+                            key={t}
+                            className="bg-zinc-800 text-zinc-300 px-2.5 py-0.5 rounded-full text-[11px]"
+                          >
+                            {t}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : tab === "auth" ? (
+            /* EMAIL ACCOUNT REGISTRATION & SIGN IN PAGE */
+            <div className="max-w-md mx-auto mt-6 bg-zinc-900 border border-zinc-800 rounded-2xl p-6 sm:p-8">
+              <div className="flex items-center gap-2 mb-6">
+                <span className="bg-emerald-600 p-2 rounded-xl">
+                  <Play className="w-5 h-5 fill-white text-white" />
+                </span>
+                <div>
+                  <h1 className="text-xl font-bold">
+                    {authMode === "register" ? "Create jewtube Account" : "Sign In to jewtube"}
+                  </h1>
+                  <p className="text-xs text-zinc-400">
+                    {authMode === "register"
+                      ? "Your profile will appear in jewtube Users"
+                      : "Welcome back to jewtube"}
+                  </p>
+                </div>
               </div>
 
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                  <h2 className="font-bold text-lg">Recent Watch History</h2>
-                  {history.length > 0 && (
-                    <button
-                      onClick={() => setTab("history")}
-                      className="text-xs text-blue-400 hover:underline"
-                    >
-                      View all
-                    </button>
-                  )}
+              {authError && (
+                <div className="bg-red-950/70 border border-red-700 text-red-200 text-xs rounded-xl p-3 mb-4">
+                  {authError}
                 </div>
-                {history.length === 0 ? (
-                  <p className="text-sm text-zinc-500">No videos watched yet.</p>
-                ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                    {history.slice(0, 4).map((video) => (
-                      <div
-                        key={video.id}
-                        onClick={() => openVideo(video)}
-                        className="cursor-pointer group"
-                      >
-                        <img
-                          src={video.thumbnail}
-                          alt={video.title}
-                          className="aspect-video w-full object-cover rounded-xl bg-zinc-800"
-                        />
-                        <p className="font-semibold text-sm line-clamp-2 mt-2">{video.title}</p>
-                        <p className="text-xs text-zinc-400">{video.channelTitle}</p>
-                      </div>
-                    ))}
-                  </div>
+              )}
+
+              <form onSubmit={handleAuthSubmit} className="space-y-4">
+                {authMode === "register" && (
+                  <>
+                    <div>
+                      <label className="text-xs text-zinc-400 block mb-1">Display Name</label>
+                      <input
+                        type="text"
+                        required
+                        value={authName}
+                        onChange={(e) => setAuthName(e.target.value)}
+                        placeholder="e.g. Jordan Taylor"
+                        className="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-zinc-400 block mb-1">Handle</label>
+                      <input
+                        type="text"
+                        value={authHandle}
+                        onChange={(e) => setAuthHandle(e.target.value)}
+                        placeholder="@jordantaylor"
+                        className="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                  </>
                 )}
+
+                <div>
+                  <label className="text-xs text-zinc-400 block mb-1">Email Address</label>
+                  <div className="relative">
+                    <Mail className="w-4 h-4 text-zinc-500 absolute left-3.5 top-3" />
+                    <input
+                      type="email"
+                      required
+                      value={authEmail}
+                      onChange={(e) => setAuthEmail(e.target.value)}
+                      placeholder="you@example.com"
+                      className="w-full bg-zinc-950 border border-zinc-700 rounded-xl pl-10 pr-3.5 py-2.5 text-sm focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs text-zinc-400 block mb-1">Password</label>
+                  <div className="relative">
+                    <Lock className="w-4 h-4 text-zinc-500 absolute left-3.5 top-3" />
+                    <input
+                      type="password"
+                      required
+                      value={authPassword}
+                      onChange={(e) => setAuthPassword(e.target.value)}
+                      placeholder="••••••••"
+                      className="w-full bg-zinc-950 border border-zinc-700 rounded-xl pl-10 pr-3.5 py-2.5 text-sm focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                </div>
+
+                {authMode === "register" && (
+                  <>
+                    <div>
+                      <label className="text-xs text-zinc-400 block mb-1">Channel Bio</label>
+                      <input
+                        type="text"
+                        value={authBio}
+                        onChange={(e) => setAuthBio(e.target.value)}
+                        placeholder="What do you like watching?"
+                        className="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-zinc-400 block mb-2">Avatar Color</label>
+                      <div className="flex gap-2">
+                        {AVATAR_COLORS.map((c) => (
+                          <button
+                            type="button"
+                            key={c}
+                            onClick={() => setAuthColor(c)}
+                            className={`w-8 h-8 rounded-full ${c} flex items-center justify-center`}
+                          >
+                            {authColor === c && <Check className="w-4 h-4 text-white" />}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                <button
+                  type="submit"
+                  className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-2.5 rounded-xl text-sm transition"
+                >
+                  {authMode === "register" ? "Create Account" : "Sign In"}
+                </button>
+              </form>
+
+              <div className="mt-5 pt-4 border-t border-zinc-800 text-center">
+                <button
+                  onClick={() => {
+                    setAuthMode(authMode === "register" ? "signin" : "register");
+                    setAuthError("");
+                  }}
+                  className="text-xs text-emerald-400 hover:underline"
+                >
+                  {authMode === "register"
+                    ? "Already have an account? Sign in"
+                    : "Need an account? Create one with email"}
+                </button>
               </div>
             </div>
+          ) : tab === "account" ? (
+            /* YOUR ACCOUNT PAGE */
+            !currentUser ? (
+              <div className="max-w-md mx-auto mt-10 text-center space-y-4">
+                <h1 className="text-xl font-bold">You are not signed in</h1>
+                <p className="text-sm text-zinc-400">
+                  Create a jewtube account with your email to comment, customize your profile, and appear in jewtube Users.
+                </p>
+                <button
+                  onClick={() => {
+                    setAuthMode("register");
+                    setTab("auth");
+                  }}
+                  className="bg-emerald-600 hover:bg-emerald-500 px-6 py-2.5 rounded-full text-sm font-semibold"
+                >
+                  Create Account
+                </button>
+              </div>
+            ) : (
+              <div className="max-w-5xl mx-auto space-y-8">
+                <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6">
+                  <div className="flex items-center gap-5">
+                    <div
+                      className={`w-20 h-20 rounded-full ${currentUser.color} flex items-center justify-center text-3xl font-bold shrink-0`}
+                    >
+                      {currentUser.name[0]?.toUpperCase()}
+                    </div>
+                    <div>
+                      <h1 className="text-2xl font-bold">{currentUser.name}</h1>
+                      <p className="text-xs text-zinc-400">
+                        {currentUser.handle} • {currentUser.email}
+                      </p>
+                      <p className="text-sm text-zinc-300 mt-1.5">{currentUser.bio}</p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={startEditingProfile}
+                      className="flex items-center gap-2 bg-zinc-800 hover:bg-zinc-700 px-4 py-2 rounded-full text-xs font-medium"
+                    >
+                      <Edit3 className="w-4 h-4" />
+                      <span>Edit Profile</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        setCurrentUser(null);
+                        setTab("auth");
+                        setAuthMode("signin");
+                      }}
+                      className="flex items-center gap-2 bg-zinc-800 hover:bg-red-950 hover:text-red-300 px-4 py-2 rounded-full text-xs font-medium transition"
+                    >
+                      <LogOut className="w-4 h-4" />
+                      <span>Sign Out</span>
+                    </button>
+                  </div>
+                </div>
+
+                {isEditingProfile && (
+                  <form
+                    onSubmit={saveProfile}
+                    className="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 space-y-4"
+                  >
+                    <h2 className="font-bold text-lg">Customize Your Account</h2>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className="text-xs text-zinc-400 block mb-1">Display Name</label>
+                        <input
+                          type="text"
+                          value={editName}
+                          onChange={(e) => setEditName(e.target.value)}
+                          className="w-full bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-zinc-400 block mb-1">Handle</label>
+                        <input
+                          type="text"
+                          value={editHandle}
+                          onChange={(e) => setEditHandle(e.target.value)}
+                          className="w-full bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-sm"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-xs text-zinc-400 block mb-1">Bio</label>
+                      <input
+                        type="text"
+                        value={editBio}
+                        onChange={(e) => setEditBio(e.target.value)}
+                        className="w-full bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-zinc-400 block mb-2">Avatar Color</label>
+                      <div className="flex gap-2">
+                        {AVATAR_COLORS.map((c) => (
+                          <button
+                            type="button"
+                            key={c}
+                            onClick={() => setEditColor(c)}
+                            className={`w-8 h-8 rounded-full ${c} flex items-center justify-center`}
+                          >
+                            {editColor === c && <Check className="w-4 h-4 text-white" />}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex gap-2 pt-2">
+                      <button
+                        type="submit"
+                        className="bg-emerald-600 text-white px-5 py-2 rounded-full text-sm font-semibold"
+                      >
+                        Save Changes
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIsEditingProfile(false)}
+                        className="bg-zinc-800 px-5 py-2 rounded-full text-sm"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                <div className="bg-zinc-900/70 border border-zinc-800 rounded-2xl p-5">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="w-5 h-5 text-amber-400" />
+                      <h2 className="font-bold">Your Recommendation Algorithm</h2>
+                    </div>
+                    {topInterests.length > 0 && (
+                      <button
+                        onClick={() => setInterestScores({})}
+                        className="text-xs text-zinc-400 hover:text-white flex items-center gap-1"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Reset Algorithm
+                      </button>
+                    )}
+                  </div>
+                  {topInterests.length === 0 ? (
+                    <p className="text-sm text-zinc-400">
+                      Watch or like videos and your Home feed and jewtube Users profile tags will adapt automatically!
+                    </p>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      {topInterests.map(([topic, score]) => (
+                        <button
+                          key={topic}
+                          onClick={() => {
+                            setTab("home");
+                            setCategory("");
+                            fetchVideos(topic);
+                          }}
+                          className="bg-zinc-800 hover:bg-zinc-700 px-3 py-1.5 rounded-full text-xs flex items-center gap-2"
+                        >
+                          <span className="capitalize font-medium">{topic}</span>
+                          <span className="text-zinc-400">+{score}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )
           ) : tab === "history" || tab === "liked" ? (
             /* HISTORY OR LIKED VIDEOS PAGE */
             <div className="max-w-6xl mx-auto">
@@ -969,7 +1490,6 @@ export default function YouTubeApp() {
                 </div>
               )}
 
-              {/* Matching Creator Channel Cards in Search Results */}
               {matchedChannels.length > 0 && (
                 <div className="mb-6 space-y-3">
                   {matchedChannels.map((ch) => (
@@ -978,7 +1498,7 @@ export default function YouTubeApp() {
                       className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 flex items-center justify-between gap-4"
                     >
                       <div
-                        onClick={() => openChannel(ch.title, ch.id)}
+                        onClick={() => openChannel(ch.title, ch.id, "videos")}
                         className="flex items-center gap-4 cursor-pointer group min-w-0"
                       >
                         {ch.avatar ? (
@@ -993,7 +1513,7 @@ export default function YouTubeApp() {
                           </div>
                         )}
                         <div className="min-w-0">
-                          <h2 className="font-bold text-base group-hover:text-blue-400 transition">
+                          <h2 className="font-bold text-base group-hover:text-emerald-400 transition">
                             {ch.title}
                           </h2>
                           <p className="text-xs text-zinc-400">
@@ -1007,7 +1527,7 @@ export default function YouTubeApp() {
 
                       <div className="flex items-center gap-2 shrink-0">
                         <button
-                          onClick={() => openChannel(ch.title, ch.id)}
+                          onClick={() => openChannel(ch.title, ch.id, "videos")}
                           className="bg-zinc-800 hover:bg-zinc-700 px-4 py-2 rounded-full text-xs font-semibold"
                         >
                           View Channel
@@ -1054,7 +1574,9 @@ export default function YouTubeApp() {
                       </div>
                       <div className="flex gap-3 mt-3">
                         <button
-                          onClick={() => openChannel(video.channelTitle, video.channelId)}
+                          onClick={() =>
+                            openChannel(video.channelTitle, video.channelId, "videos")
+                          }
                           className="w-9 h-9 rounded-full bg-zinc-800 hover:bg-zinc-700 flex items-center justify-center font-bold text-sm shrink-0"
                         >
                           {video.channelTitle?.[0]}
@@ -1062,12 +1584,14 @@ export default function YouTubeApp() {
                         <div className="min-w-0">
                           <h2
                             onClick={() => openVideo(video)}
-                            className="font-semibold text-sm line-clamp-2 leading-snug cursor-pointer hover:text-blue-400"
+                            className="font-semibold text-sm line-clamp-2 leading-snug cursor-pointer hover:text-emerald-400"
                           >
                             {video.title}
                           </h2>
                           <button
-                            onClick={() => openChannel(video.channelTitle, video.channelId)}
+                            onClick={() =>
+                              openChannel(video.channelTitle, video.channelId, "videos")
+                            }
                             className="text-xs text-zinc-400 hover:text-white mt-1 block text-left"
                           >
                             {video.channelTitle}
