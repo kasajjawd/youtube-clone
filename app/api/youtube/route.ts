@@ -57,6 +57,54 @@ async function fetchFromInvidious(path: string) {
   return null;
 }
 
+// Recursively find all video objects anywhere inside YouTube's ytInitialData JSON
+function extractAllVideos(root: any, fallbackChannelTitle = "", fallbackChannelId = "") {
+  const found: any[] = [];
+  const seen = new Set<string>();
+  const stack = [root];
+
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node || typeof node !== "object") continue;
+
+    const v = node.videoRenderer || node.gridVideoRenderer;
+    if (v && v.videoId && !seen.has(v.videoId)) {
+      seen.add(v.videoId);
+      const ownerRuns = v.ownerText?.runs?.[0] || v.shortBylineText?.runs?.[0];
+      found.push({
+        id: v.videoId,
+        title:
+          v.title?.runs?.map((r: any) => r.text).join("") ||
+          v.title?.simpleText ||
+          "YouTube Video",
+        description:
+          v.detailedMetadataSnippets?.[0]?.snippetText?.runs
+            ?.map((r: any) => r.text)
+            .join("") || "",
+        thumbnail: `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`,
+        channelTitle: ownerRuns?.text || fallbackChannelTitle || "YouTube Creator",
+        channelId:
+          ownerRuns?.navigationEndpoint?.browseEndpoint?.browseId ||
+          fallbackChannelId ||
+          "",
+        viewCount:
+          v.shortViewCountText?.simpleText ||
+          v.viewCountText?.simpleText ||
+          "YouTube Video",
+      });
+    }
+
+    if (Array.isArray(node)) {
+      for (let i = node.length - 1; i >= 0; i--) stack.push(node[i]);
+    } else {
+      for (const key of Object.keys(node)) {
+        stack.push(node[key]);
+      }
+    }
+  }
+  return found;
+}
+
 // Fetch YouTube search results + matching channel card directly
 async function searchYouTubeDirect(query: string) {
   const res = await fetch(
@@ -66,21 +114,22 @@ async function searchYouTubeDirect(query: string) {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
+        Cookie: "CONSENT=YES+cb",
       },
       cache: "no-store",
     }
   );
   const html = await res.text();
-  const match = html.match(/var ytInitialData = ({.*?});<\/script>/);
+  const match = html.match(/var ytInitialData\s*=\s*({.*?});\s*<\/script>/s);
   if (!match) return { videos: [], channels: [] };
 
   const data = JSON.parse(match[1]);
+  const videos = extractAllVideos(data);
+
+  const channels: any[] = [];
   const contents =
     data?.contents?.twoColumnSearchResultsRenderer?.primaryContents
       ?.sectionListRenderer?.contents || [];
-
-  const videos: any[] = [];
-  const channels: any[] = [];
 
   for (const section of contents) {
     const items = section?.itemSectionRenderer?.contents || [];
@@ -98,90 +147,101 @@ async function searchYouTubeDirect(query: string) {
           avatar: thumb.startsWith("//") ? `https:${thumb}` : thumb,
         });
       }
-
-      const v = item?.videoRenderer;
-      if (v && v.videoId) {
-        const ownerRuns = v.ownerText?.runs?.[0];
-        videos.push({
-          id: v.videoId,
-          title: v.title?.runs?.[0]?.text || "YouTube Video",
-          description:
-            v.detailedMetadataSnippets?.[0]?.snippetText?.runs
-              ?.map((r: any) => r.text)
-              .join("") || "",
-          thumbnail: `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`,
-          channelTitle: ownerRuns?.text || "YouTube Creator",
-          channelId:
-            ownerRuns?.navigationEndpoint?.browseEndpoint?.browseId || "",
-          viewCount: v.shortViewCountText?.simpleText || "YouTube Video",
-        });
-      }
     }
   }
+
   return { videos: videos.slice(0, 24), channels: channels.slice(0, 3) };
+}
+
+// Backup: Fetch latest uploads from YouTube's official public RSS feed for a channel
+async function fetchChannelRssVideos(channelId: string, channelTitle: string) {
+  try {
+    const res = await fetch(
+      `https://www.youtube.com/feeds/videos.xml?channel_id=${encodeURIComponent(channelId)}`,
+      { cache: "no-store" }
+    );
+    if (!res.ok) return [];
+    const xml = await res.text();
+    const entries = xml.split("<entry>").slice(1);
+    return entries.map((entry) => {
+      const id = entry.match(/<yt:videoId>(.*?)<\/yt:videoId>/)?.[1] || "";
+      const title =
+        entry
+          .match(/<title>(.*?)<\/title>/)?.[1]
+          ?.replace(/&amp;/g, "&")
+          ?.replace(/&quot;/g, '"')
+          ?.replace(/&#39;/g, "'") || "YouTube Video";
+      const views = entry.match(/views="(\d+)"/)?.[1];
+      return {
+        id,
+        title,
+        thumbnail: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
+        channelTitle,
+        channelId,
+        viewCount: views ? formatViews(Number(views)) : "New Upload",
+      };
+    }).filter((v) => v.id);
+  } catch {
+    return [];
+  }
 }
 
 // Fetch a real YouTube channel's profile + uploaded videos
 async function fetchChannelData(channelId: string) {
+  const headers = {
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9",
+    Cookie: "CONSENT=YES+cb",
+  };
+
   const res = await fetch(
     `https://www.youtube.com/channel/${encodeURIComponent(channelId)}/videos`,
-    {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
-      },
-      cache: "no-store",
-    }
+    { headers, cache: "no-store" }
   );
   const html = await res.text();
-  const match = html.match(/var ytInitialData = ({.*?});<\/script>/);
-  if (!match) return null;
+  const match = html.match(/var ytInitialData\s*=\s*({.*?});\s*<\/script>/s);
 
-  const data = JSON.parse(match[1]);
-  const meta = data?.metadata?.channelMetadataRenderer || {};
-  const header =
-    data?.header?.pageHeaderRenderer?.content?.pageHeaderViewModel ||
-    data?.header?.c4TabbedHeaderRenderer ||
-    {};
+  let title = "YouTube Channel";
+  let description = "";
+  let avatar = "";
+  let banner = "";
+  let videos: any[] = [];
 
-  const avatar =
-    meta.avatar?.thumbnails?.slice(-1)[0]?.url ||
-    header?.avatar?.thumbnails?.slice(-1)[0]?.url ||
-    "";
-  const banner =
-    header?.banner?.imageBannerViewModel?.image?.sources?.slice(-1)[0]?.url ||
-    header?.banner?.thumbnails?.slice(-1)[0]?.url ||
-    "";
+  if (match) {
+    const data = JSON.parse(match[1]);
+    const meta = data?.metadata?.channelMetadataRenderer || {};
+    const header =
+      data?.header?.pageHeaderRenderer?.content?.pageHeaderViewModel ||
+      data?.header?.c4TabbedHeaderRenderer ||
+      {};
 
-  const tabs = data?.contents?.twoColumnBrowseResultsRenderer?.tabs || [];
-  const videosTab = tabs.find((t: any) => t.tabRenderer?.selected) || tabs[1] || tabs[0];
-  const gridItems =
-    videosTab?.tabRenderer?.content?.richGridRenderer?.contents || [];
+    title = meta.title || title;
+    description = meta.description || "";
+    avatar =
+      meta.avatar?.thumbnails?.slice(-1)[0]?.url ||
+      header?.avatar?.thumbnails?.slice(-1)[0]?.url ||
+      "";
+    banner =
+      header?.banner?.imageBannerViewModel?.image?.sources?.slice(-1)[0]?.url ||
+      header?.banner?.thumbnails?.slice(-1)[0]?.url ||
+      "";
 
-  const videos: any[] = [];
-  for (const entry of gridItems) {
-    const v = entry?.richItemRenderer?.content?.videoRenderer;
-    if (v && v.videoId) {
-      videos.push({
-        id: v.videoId,
-        title: v.title?.runs?.[0]?.text || "Video",
-        thumbnail: `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`,
-        channelTitle: meta.title || "Channel",
-        channelId,
-        viewCount: v.shortViewCountText?.simpleText || "",
-      });
-    }
+    videos = extractAllVideos(data, title, channelId);
+  }
+
+  // If the /videos tab returned empty, pull from YouTube's official RSS feed for that channel
+  if (videos.length === 0 && channelId.startsWith("UC")) {
+    videos = await fetchChannelRssVideos(channelId, title);
   }
 
   return {
     channel: {
       id: channelId,
-      title: meta.title || "YouTube Channel",
-      description: meta.description || "",
+      title,
+      description,
       avatar: avatar.startsWith("//") ? `https:${avatar}` : avatar,
       banner: banner.startsWith("//") ? `https:${banner}` : banner,
-      vanityUrl: meta.vanityChannelUrl || "",
     },
     videos: videos.slice(0, 30),
   };
@@ -194,11 +254,14 @@ export async function GET(req: NextRequest) {
   const channelId = searchParams.get("channelId");
   const channelName = searchParams.get("channelName");
 
-  // 1. Channel Page Request (by ID or by Name)
+  // 1. Channel Page Request
   if (channelId || channelName) {
     let targetId = channelId || "";
+    let fallbackInfo: any = null;
+
     if (!targetId && channelName) {
       const searchRes = await searchYouTubeDirect(channelName);
+      fallbackInfo = searchRes.channels[0] || null;
       targetId =
         searchRes.channels[0]?.id ||
         searchRes.videos.find((v) => v.channelId)?.channelId ||
@@ -208,18 +271,22 @@ export async function GET(req: NextRequest) {
     if (targetId) {
       const channelData = await fetchChannelData(targetId);
       if (channelData) {
+        if (fallbackInfo) {
+          channelData.channel.avatar = channelData.channel.avatar || fallbackInfo.avatar;
+          channelData.channel.description =
+            channelData.channel.description || fallbackInfo.description;
+        }
         return NextResponse.json(channelData);
       }
     }
 
-    // Fallback if channel ID couldn't be resolved
     const fallbackSearch = await searchYouTubeDirect(channelName || "youtube");
     return NextResponse.json({
       channel: {
         id: targetId || "channel",
         title: channelName || "YouTube Channel",
-        description: "Latest videos from this creator.",
-        avatar: "",
+        description: fallbackInfo?.description || "Latest videos from this creator.",
+        avatar: fallbackInfo?.avatar || "",
         banner: "",
       },
       videos: fallbackSearch.videos,
