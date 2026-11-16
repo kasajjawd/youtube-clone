@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 
-// Force Vercel never to cache empty responses
 export const dynamic = "force-dynamic";
 
 const INVIDIOUS_INSTANCES = [
@@ -16,6 +15,7 @@ const BACKUP_VIDEOS = [
     description: "Thank you for listening, I hope you will have a good time here!",
     thumbnail: "https://i.ytimg.com/vi/jfKfPfyJRdk/hqdefault.jpg",
     channelTitle: "Lofi Girl",
+    channelId: "UCSJ4gkVC6NrvII8umztf0Ow",
     viewCount: "48.5M views",
   },
   {
@@ -24,6 +24,7 @@ const BACKUP_VIDEOS = [
     description: "Experience the wildlife and nature of Costa Rica in 4K Ultra HD.",
     thumbnail: "https://i.ytimg.com/vi/LXb3EKWsInQ/hqdefault.jpg",
     channelTitle: "Jacob + Katie Schwarz",
+    channelId: "UCa1yUHQmV6Z0PpAUtfgNd9g",
     viewCount: "112M views",
   },
   {
@@ -32,15 +33,8 @@ const BACKUP_VIDEOS = [
     description: "What are the neurons, why are there layers, and what is the math underlying it?",
     thumbnail: "https://i.ytimg.com/vi/aircAruvnKk/hqdefault.jpg",
     channelTitle: "3Blue1Brown",
+    channelId: "UCYO_jab_esuFRV4b17AJtAw",
     viewCount: "18.4M views",
-  },
-  {
-    id: "aqz-KE-bpKQ",
-    title: "Big Buck Bunny 60fps 4K - Official Blender Foundation Short Film",
-    description: "Big Buck Bunny is a short computer-animated comedy film by the Blender Institute.",
-    thumbnail: "https://i.ytimg.com/vi/aqz-KE-bpKQ/hqdefault.jpg",
-    channelTitle: "Blender",
-    viewCount: "21.5M views",
   },
 ];
 
@@ -51,7 +45,19 @@ function formatViews(views?: number) {
   return `${views} views`;
 }
 
-// Method 1: Fetch directly from YouTube's public search page JSON (no API key needed)
+async function fetchFromInvidious(path: string) {
+  for (const base of INVIDIOUS_INSTANCES) {
+    try {
+      const res = await fetch(`${base}${path}`, { cache: "no-store" });
+      if (res.ok) return await res.json();
+    } catch {
+      // Try next instance
+    }
+  }
+  return null;
+}
+
+// Fetch YouTube search results + matching channel card directly
 async function searchYouTubeDirect(query: string) {
   const res = await fetch(
     `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`,
@@ -66,7 +72,7 @@ async function searchYouTubeDirect(query: string) {
   );
   const html = await res.text();
   const match = html.match(/var ytInitialData = ({.*?});<\/script>/);
-  if (!match) return [];
+  if (!match) return { videos: [], channels: [] };
 
   const data = JSON.parse(match[1]);
   const contents =
@@ -74,11 +80,28 @@ async function searchYouTubeDirect(query: string) {
       ?.sectionListRenderer?.contents || [];
 
   const videos: any[] = [];
+  const channels: any[] = [];
+
   for (const section of contents) {
     const items = section?.itemSectionRenderer?.contents || [];
     for (const item of items) {
+      const c = item?.channelRenderer;
+      if (c && c.channelId) {
+        const thumb = c.thumbnail?.thumbnails?.slice(-1)[0]?.url || "";
+        channels.push({
+          id: c.channelId,
+          title: c.title?.simpleText || "Channel",
+          handle: c.subscriberCountText?.simpleText || "",
+          subscribers: c.videoCountText?.simpleText || "",
+          description:
+            c.descriptionSnippet?.runs?.map((r: any) => r.text).join("") || "",
+          avatar: thumb.startsWith("//") ? `https:${thumb}` : thumb,
+        });
+      }
+
       const v = item?.videoRenderer;
       if (v && v.videoId) {
+        const ownerRuns = v.ownerText?.runs?.[0];
         videos.push({
           id: v.videoId,
           title: v.title?.runs?.[0]?.text || "YouTube Video",
@@ -87,34 +110,123 @@ async function searchYouTubeDirect(query: string) {
               ?.map((r: any) => r.text)
               .join("") || "",
           thumbnail: `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`,
-          channelTitle: v.ownerText?.runs?.[0]?.text || "YouTube Creator",
+          channelTitle: ownerRuns?.text || "YouTube Creator",
+          channelId:
+            ownerRuns?.navigationEndpoint?.browseEndpoint?.browseId || "",
           viewCount: v.shortViewCountText?.simpleText || "YouTube Video",
         });
       }
     }
   }
-  return videos.slice(0, 24);
+  return { videos: videos.slice(0, 24), channels: channels.slice(0, 3) };
 }
 
-// Method 2: Fetch from Invidious public API instances
-async function fetchFromInvidious(path: string) {
-  for (const base of INVIDIOUS_INSTANCES) {
-    try {
-      const res = await fetch(`${base}${path}`, { cache: "no-store" });
-      if (res.ok) return await res.json();
-    } catch {
-      // Try next instance
+// Fetch a real YouTube channel's profile + uploaded videos
+async function fetchChannelData(channelId: string) {
+  const res = await fetch(
+    `https://www.youtube.com/channel/${encodeURIComponent(channelId)}/videos`,
+    {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+      cache: "no-store",
+    }
+  );
+  const html = await res.text();
+  const match = html.match(/var ytInitialData = ({.*?});<\/script>/);
+  if (!match) return null;
+
+  const data = JSON.parse(match[1]);
+  const meta = data?.metadata?.channelMetadataRenderer || {};
+  const header =
+    data?.header?.pageHeaderRenderer?.content?.pageHeaderViewModel ||
+    data?.header?.c4TabbedHeaderRenderer ||
+    {};
+
+  const avatar =
+    meta.avatar?.thumbnails?.slice(-1)[0]?.url ||
+    header?.avatar?.thumbnails?.slice(-1)[0]?.url ||
+    "";
+  const banner =
+    header?.banner?.imageBannerViewModel?.image?.sources?.slice(-1)[0]?.url ||
+    header?.banner?.thumbnails?.slice(-1)[0]?.url ||
+    "";
+
+  const tabs = data?.contents?.twoColumnBrowseResultsRenderer?.tabs || [];
+  const videosTab = tabs.find((t: any) => t.tabRenderer?.selected) || tabs[1] || tabs[0];
+  const gridItems =
+    videosTab?.tabRenderer?.content?.richGridRenderer?.contents || [];
+
+  const videos: any[] = [];
+  for (const entry of gridItems) {
+    const v = entry?.richItemRenderer?.content?.videoRenderer;
+    if (v && v.videoId) {
+      videos.push({
+        id: v.videoId,
+        title: v.title?.runs?.[0]?.text || "Video",
+        thumbnail: `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`,
+        channelTitle: meta.title || "Channel",
+        channelId,
+        viewCount: v.shortViewCountText?.simpleText || "",
+      });
     }
   }
-  return null;
+
+  return {
+    channel: {
+      id: channelId,
+      title: meta.title || "YouTube Channel",
+      description: meta.description || "",
+      avatar: avatar.startsWith("//") ? `https:${avatar}` : avatar,
+      banner: banner.startsWith("//") ? `https:${banner}` : banner,
+      vanityUrl: meta.vanityChannelUrl || "",
+    },
+    videos: videos.slice(0, 30),
+  };
 }
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const query = searchParams.get("q") || "";
   const videoId = searchParams.get("videoId");
+  const channelId = searchParams.get("channelId");
+  const channelName = searchParams.get("channelName");
 
-  // 1. Video Watch Details & Comments
+  // 1. Channel Page Request (by ID or by Name)
+  if (channelId || channelName) {
+    let targetId = channelId || "";
+    if (!targetId && channelName) {
+      const searchRes = await searchYouTubeDirect(channelName);
+      targetId =
+        searchRes.channels[0]?.id ||
+        searchRes.videos.find((v) => v.channelId)?.channelId ||
+        "";
+    }
+
+    if (targetId) {
+      const channelData = await fetchChannelData(targetId);
+      if (channelData) {
+        return NextResponse.json(channelData);
+      }
+    }
+
+    // Fallback if channel ID couldn't be resolved
+    const fallbackSearch = await searchYouTubeDirect(channelName || "youtube");
+    return NextResponse.json({
+      channel: {
+        id: targetId || "channel",
+        title: channelName || "YouTube Channel",
+        description: "Latest videos from this creator.",
+        avatar: "",
+        banner: "",
+      },
+      videos: fallbackSearch.videos,
+    });
+  }
+
+  // 2. Single Video Details & Comments
   if (videoId) {
     const [videoData, commentsData] = await Promise.all([
       fetchFromInvidious(`/api/v1/videos/${videoId}`),
@@ -128,6 +240,7 @@ export async function GET(req: NextRequest) {
             title: videoData.title,
             description: videoData.description || "No description available.",
             channelTitle: videoData.author,
+            channelId: videoData.authorId || "",
             viewCount: formatViews(videoData.viewCount),
             likeCount: videoData.likeCount
               ? videoData.likeCount.toLocaleString()
@@ -140,39 +253,22 @@ export async function GET(req: NextRequest) {
         text: c.content || "",
         likes: c.likeCount || 0,
       })),
-      hasApiKey: true,
     });
   }
 
-  // 2. Search or Home Feed
+  // 3. Search or Home Feed
   const searchTerm = query.trim() || "popular music gaming tech 2026";
-
-  // Try direct YouTube search first
   try {
     const directResults = await searchYouTubeDirect(searchTerm);
-    if (directResults.length > 0) {
-      return NextResponse.json({ videos: directResults, hasApiKey: true });
+    if (directResults.videos.length > 0 || directResults.channels.length > 0) {
+      return NextResponse.json({
+        videos: directResults.videos,
+        channels: query.trim() ? directResults.channels : [],
+      });
     }
   } catch {
-    // Fall through to Invidious
+    // Fall through
   }
 
-  // Try Invidious API second
-  const invResults = await fetchFromInvidious(
-    `/api/v1/search?q=${encodeURIComponent(searchTerm)}&type=video`
-  );
-  if (Array.isArray(invResults) && invResults.length > 0) {
-    const videos = invResults.slice(0, 24).map((v: any) => ({
-      id: v.videoId,
-      title: v.title,
-      description: v.description || "",
-      thumbnail: `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`,
-      channelTitle: v.author || "YouTube Creator",
-      viewCount: formatViews(v.viewCount),
-    }));
-    return NextResponse.json({ videos, hasApiKey: true });
-  }
-
-  // Final backup so the page is never blank
-  return NextResponse.json({ videos: BACKUP_VIDEOS, hasApiKey: false });
+  return NextResponse.json({ videos: BACKUP_VIDEOS, channels: [] });
 }
