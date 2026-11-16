@@ -511,7 +511,7 @@ export default function YewTubeApp() {
           <span className="bg-emerald-600 p-1.5 rounded-lg flex items-center justify-center">
             <Play className="w-4 h-4 fill-white text-white" />
           </span>
-          <span>YewTube</span>
+          <span>JewTube</span>
         </button>
 
         <form onSubmit={handleSearch} className="flex flex-1 max-w-xl mx-4">
@@ -602,7 +602,7 @@ export default function YewTubeApp() {
             }`}
           >
             <Globe className="w-5 h-5" />
-            <span>YewTube Users ({accounts.length})</span>
+            <span>JewTube Users ({accounts.length})</span>
           </button>
 
           <div className="my-2 border-t border-zinc-800" />
