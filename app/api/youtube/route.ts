@@ -9,6 +9,13 @@ const INVIDIOUS_INSTANCES = [
   "https://invidious.privacyredirect.com",
 ];
 
+const BROWSER_HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+  "Accept-Language": "en-US,en;q=0.9",
+  Cookie: "CONSENT=YES+cb",
+};
+
 const BACKUP_VIDEOS = [
   {
     id: "jfKfPfyJRdk",
@@ -37,51 +44,6 @@ const BACKUP_VIDEOS = [
     channelId: "UCYO_jab_esuFRV4b17AJtAw",
     viewCount: "18.4M views",
   },
-  {
-    id: "dQw4w9WgXcQ",
-    title: "Rick Astley - Never Gonna Give You Up (Official Video)",
-    description: "The official video for Never Gonna Give You Up by Rick Astley.",
-    thumbnail: "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
-    channelTitle: "Rick Astley",
-    channelId: "UCuAXFkgsw1L7xaCfnd5JJOw",
-    viewCount: "1.6B views",
-  },
-  {
-    id: "M7lc1UVf-VE",
-    title: "YouTube Developers Live: Embedded Web Player Customization",
-    description: "Learn how to customize the embedded player.",
-    thumbnail: "https://i.ytimg.com/vi/M7lc1UVf-VE/hqdefault.jpg",
-    channelTitle: "Google for Developers",
-    channelId: "UC_x5XG1OV2P6uZZ5FSM9Ttw",
-    viewCount: "2.1M views",
-  },
-  {
-    id: "aqz-KE-bpKQ",
-    title: "Big Buck Bunny 60fps 4K - Official Blender Foundation Short Film",
-    description: "Big Buck Bunny in 4K 60fps.",
-    thumbnail: "https://i.ytimg.com/vi/aqz-KE-bpKQ/hqdefault.jpg",
-    channelTitle: "Blender",
-    channelId: "UCSMOQeBJ2RAnuFungnQOxLg",
-    viewCount: "19.2M views",
-  },
-  {
-    id: "9bZkp7q19f0",
-    title: "PSY - GANGNAM STYLE(강남스타일) M/V",
-    description: "PSY - GANGNAM STYLE Official Music Video.",
-    thumbnail: "https://i.ytimg.com/vi/9bZkp7q19f0/hqdefault.jpg",
-    channelTitle: "officialpsy",
-    channelId: "UCrDkAvwZum-UTjHmzDI2iIw",
-    viewCount: "5.4B views",
-  },
-  {
-    id: "kJQP7kiw5Fk",
-    title: "Luis Fonsi - Despacito ft. Daddy Yankee",
-    description: "Despacito Official Music Video.",
-    thumbnail: "https://i.ytimg.com/vi/kJQP7kiw5Fk/hqdefault.jpg",
-    channelTitle: "Luis Fonsi",
-    channelId: "UCLp8RBhQHu9wSsq62j_Md6A",
-    viewCount: "8.6B views",
-  },
 ];
 
 function formatViews(views?: number) {
@@ -109,8 +71,14 @@ async function fetchFromInvidious(path: string) {
   return null;
 }
 
-function extractAllVideos(root: any, fallbackChannelTitle = "", fallbackChannelId = "") {
+// Recursively extract videos, playlist videos, Shorts, and continuation tokens
+function extractVideosAndTokens(
+  root: any,
+  fallbackChannelTitle = "",
+  fallbackChannelId = ""
+) {
   const found: any[] = [];
+  const tokens: string[] = [];
   const seen = new Set<string>();
   const stack = [root];
 
@@ -118,10 +86,25 @@ function extractAllVideos(root: any, fallbackChannelTitle = "", fallbackChannelI
     const node = stack.pop();
     if (!node || typeof node !== "object") continue;
 
-    const v = node.videoRenderer || node.gridVideoRenderer;
+    // 1. Continuation token for loading more pages
+    const token =
+      node.continuationItemRenderer?.continuationEndpoint?.continuationCommand
+        ?.token;
+    if (token && typeof token === "string" && !tokens.includes(token)) {
+      tokens.push(token);
+    }
+
+    // 2. Standard, Grid, and Playlist Video Renderers
+    const v =
+      node.videoRenderer ||
+      node.gridVideoRenderer ||
+      node.playlistVideoRenderer;
     if (v && v.videoId && !seen.has(v.videoId)) {
       seen.add(v.videoId);
-      const ownerRuns = v.ownerText?.runs?.[0] || v.shortBylineText?.runs?.[0];
+      const ownerRuns =
+        v.ownerText?.runs?.[0] ||
+        v.shortBylineText?.runs?.[0] ||
+        v.longBylineText?.runs?.[0];
       found.push({
         id: v.videoId,
         title:
@@ -141,11 +124,13 @@ function extractAllVideos(root: any, fallbackChannelTitle = "", fallbackChannelI
         viewCount:
           v.shortViewCountText?.simpleText ||
           v.viewCountText?.simpleText ||
+          v.videoInfo?.runs?.map((r: any) => r.text).join("") ||
           "Video",
         isShort: false,
       });
     }
 
+    // 3. YouTube Shorts
     const reel = node.reelItemRenderer;
     if (reel && reel.videoId && !seen.has(reel.videoId)) {
       seen.add(reel.videoId);
@@ -188,29 +173,124 @@ function extractAllVideos(root: any, fallbackChannelTitle = "", fallbackChannelI
       }
     }
   }
-  return found;
+
+  return { videos: found, tokens };
+}
+
+// Fetch next batches of videos via YouTube's internal browse continuation endpoint
+async function fetchContinuationPages(
+  apiKey: string,
+  initialTokens: string[],
+  channelTitle: string,
+  channelId: string,
+  maxPages = 6
+) {
+  const extraVideos: any[] = [];
+  let queue = [...initialTokens];
+  let pagesFetched = 0;
+
+  while (queue.length > 0 && pagesFetched < maxPages) {
+    const token = queue.shift()!;
+    pagesFetched++;
+
+    try {
+      const res = await fetch(
+        `https://www.youtube.com/youtubei/v1/browse?key=${encodeURIComponent(apiKey)}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "User-Agent": BROWSER_HEADERS["User-Agent"],
+          },
+          body: JSON.stringify({
+            context: {
+              client: {
+                clientName: "WEB",
+                clientVersion: "2.20260501.01.00",
+                hl: "en",
+                gl: "US",
+              },
+            },
+            continuation: token,
+          }),
+          cache: "no-store",
+        }
+      );
+
+      if (!res.ok) break;
+      const json = await res.json();
+      const { videos, tokens } = extractVideosAndTokens(
+        json,
+        channelTitle,
+        channelId
+      );
+      extraVideos.push(...videos);
+      for (const t of tokens) {
+        if (!queue.includes(t)) queue.push(t);
+      }
+    } catch {
+      break;
+    }
+  }
+
+  return extraVideos;
+}
+
+// Fetch from the creator's hidden UU... All-Uploads playlist for full catalog coverage
+async function fetchAllUploadsPlaylist(
+  channelId: string,
+  channelTitle: string,
+  maxPages = 5
+) {
+  if (!channelId.startsWith("UC")) return [];
+  const uploadsPlaylistId = `UU${channelId.slice(2)}`;
+
+  try {
+    const res = await fetch(
+      `https://www.youtube.com/playlist?list=${encodeURIComponent(uploadsPlaylistId)}`,
+      { headers: BROWSER_HEADERS, cache: "no-store" }
+    );
+    const html = await res.text();
+    const match = html.match(/var ytInitialData\s*=\s*({.*?});\s*<\/script>/s);
+    const keyMatch = html.match(/"INNERTUBE_API_KEY":"([^"]+)"/);
+    if (!match) return [];
+
+    const data = JSON.parse(match[1]);
+    const { videos, tokens } = extractVideosAndTokens(
+      data,
+      channelTitle,
+      channelId
+    );
+
+    if (keyMatch?.[1] && tokens.length > 0) {
+      const more = await fetchContinuationPages(
+        keyMatch[1],
+        tokens,
+        channelTitle,
+        channelId,
+        maxPages
+      );
+      videos.push(...more);
+    }
+
+    return videos;
+  } catch {
+    return [];
+  }
 }
 
 async function searchYouTubeDirect(query: string) {
   try {
     const res = await fetch(
       `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`,
-      {
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-          "Accept-Language": "en-US,en;q=0.9",
-          Cookie: "CONSENT=YES+cb",
-        },
-        cache: "no-store",
-      }
+      { headers: BROWSER_HEADERS, cache: "no-store" }
     );
     const html = await res.text();
     const match = html.match(/var ytInitialData\s*=\s*({.*?});\s*<\/script>/s);
     if (!match) return { videos: [], channels: [] };
 
     const data = JSON.parse(match[1]);
-    const videos = extractAllVideos(data);
+    const { videos } = extractVideosAndTokens(data);
 
     const channels: any[] = [];
     const contents =
@@ -308,14 +388,8 @@ async function fetchChannelRssVideos(channelId: string, channelTitle: string) {
   }
 }
 
+// Fetch ALL creator videos across tab pagination + All-Uploads playlist
 async function fetchChannelData(channelId: string, tab = "videos") {
-  const headers = {
-    "User-Agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept-Language": "en-US,en;q=0.9",
-    Cookie: "CONSENT=YES+cb",
-  };
-
   const pathSuffix =
     tab === "shorts" ? "/shorts" : tab === "live" ? "/streams" : "/videos";
 
@@ -323,15 +397,26 @@ async function fetchChannelData(channelId: string, tab = "videos") {
   let description = "";
   let avatar = "";
   let banner = "";
-  let videos: any[] = [];
+  const allVideos: any[] = [];
+  const seen = new Set<string>();
+
+  const addUnique = (items: any[]) => {
+    for (const item of items) {
+      if (item.id && !seen.has(item.id)) {
+        seen.add(item.id);
+        allVideos.push(item);
+      }
+    }
+  };
 
   try {
     const res = await fetch(
       `https://www.youtube.com/channel/${encodeURIComponent(channelId)}${pathSuffix}`,
-      { headers, cache: "no-store" }
+      { headers: BROWSER_HEADERS, cache: "no-store" }
     );
     const html = await res.text();
     const match = html.match(/var ytInitialData\s*=\s*({.*?});\s*<\/script>/s);
+    const keyMatch = html.match(/"INNERTUBE_API_KEY":"([^"]+)"/);
 
     if (match) {
       const data = JSON.parse(match[1]);
@@ -352,37 +437,70 @@ async function fetchChannelData(channelId: string, tab = "videos") {
         header?.banner?.thumbnails?.slice(-1)[0]?.url ||
         "";
 
-      videos = extractAllVideos(data, title, channelId);
-    }
-  } catch {
-    // Continue to RSS / Invidious fallback
-  }
+      const { videos, tokens } = extractVideosAndTokens(data, title, channelId);
+      addUnique(videos);
 
-  if (tab === "videos" && channelId.startsWith("UC")) {
-    const rssVideos = await fetchChannelRssVideos(channelId, title);
-    const seen = new Set(videos.map((v) => v.id));
-    for (const rv of rssVideos) {
-      if (!seen.has(rv.id)) {
-        videos.push(rv);
-        seen.add(rv.id);
+      // Follow continuation tokens to load more pages of the creator's tab
+      if (keyMatch?.[1] && tokens.length > 0) {
+        const pagedVideos = await fetchContinuationPages(
+          keyMatch[1],
+          tokens,
+          title,
+          channelId,
+          6
+        );
+        addUnique(pagedVideos);
       }
     }
+  } catch {
+    // Fall through to playlist / RSS / Invidious
   }
 
-  if (videos.length === 0) {
+  // On "videos" or "popular", also merge the creator's full UU... uploads playlist
+  if ((tab === "videos" || tab === "popular") && channelId.startsWith("UC")) {
+    const [playlistVideos, rssVideos] = await Promise.all([
+      fetchAllUploadsPlaylist(channelId, title, 5),
+      fetchChannelRssVideos(channelId, title),
+    ]);
+    addUnique(rssVideos);
+    addUnique(playlistVideos);
+  }
+
+  // Sort by view count when "popular" tab is selected
+  if (tab === "popular" && allVideos.length > 0) {
+    const parseViewNum = (str: string) => {
+      const m = (str || "").replace(/,/g, "").match(/([\d.]+)\s*([KMB])?/i);
+      if (!m) return 0;
+      const num = parseFloat(m[1]);
+      const mult =
+        m[2]?.toUpperCase() === "B"
+          ? 1e9
+          : m[2]?.toUpperCase() === "M"
+          ? 1e6
+          : m[2]?.toUpperCase() === "K"
+          ? 1e3
+          : 1;
+      return num * mult;
+    };
+    allVideos.sort((a, b) => parseViewNum(b.viewCount) - parseViewNum(a.viewCount));
+  }
+
+  if (allVideos.length === 0) {
     const invChannel = await fetchFromInvidious(`/api/v1/channels/${channelId}`);
     if (invChannel?.latestVideos) {
       title = invChannel.author || title;
       description = invChannel.description || description;
       avatar = invChannel.authorThumbnails?.slice(-1)[0]?.url || avatar;
-      videos = invChannel.latestVideos.map((v: any) => ({
-        id: v.videoId,
-        title: v.title,
-        thumbnail: `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`,
-        channelTitle: title,
-        channelId,
-        viewCount: formatViews(v.viewCount),
-      }));
+      addUnique(
+        invChannel.latestVideos.map((v: any) => ({
+          id: v.videoId,
+          title: v.title,
+          thumbnail: `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`,
+          channelTitle: title,
+          channelId,
+          viewCount: formatViews(v.viewCount),
+        }))
+      );
     }
   }
 
@@ -394,7 +512,7 @@ async function fetchChannelData(channelId: string, tab = "videos") {
       avatar: avatar.startsWith("//") ? `https:${avatar}` : avatar,
       banner: banner.startsWith("//") ? `https:${banner}` : banner,
     },
-    videos: videos.slice(0, 60),
+    videos: allVideos.slice(0, 200),
   };
 }
 
@@ -478,7 +596,7 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // 3. Search or Home Feed (Direct YouTube -> Invidious -> Guaranteed Backup)
+  // 3. Search or Home Feed
   const searchTerm = query.trim() || "popular music gaming tech 2026";
   const directResults = await searchYouTubeDirect(searchTerm);
   if (directResults.videos.length > 0 || directResults.channels.length > 0) {
