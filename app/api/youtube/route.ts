@@ -50,13 +50,14 @@ const BACKUP_VIDEOS = [
   },
 ];
 
-function extractVideosAndChannels(
+function extractVideosChannelsAndTokens(
   root: any,
   fallbackChannelTitle = "",
   fallbackChannelId = ""
 ) {
   const videos: any[] = [];
   const channels: any[] = [];
+  const tokens: string[] = [];
   const seenVideos = new Set<string>();
   const seenChannels = new Set<string>();
   const stack = [root];
@@ -64,6 +65,14 @@ function extractVideosAndChannels(
   while (stack.length > 0) {
     const node = stack.pop();
     if (!node || typeof node !== "object") continue;
+
+    // Continuation tokens for next pages
+    const token =
+      node.continuationItemRenderer?.continuationEndpoint?.continuationCommand
+        ?.token;
+    if (token && typeof token === "string" && !tokens.includes(token)) {
+      tokens.push(token);
+    }
 
     // Channels
     const c = node.channelRenderer;
@@ -81,7 +90,7 @@ function extractVideosAndChannels(
       });
     }
 
-    // Standard, Grid, and Playlist Videos
+    // Videos (standard, grid, playlist, richItem)
     const v =
       node.videoRenderer ||
       node.gridVideoRenderer ||
@@ -160,35 +169,54 @@ function extractVideosAndChannels(
     }
   }
 
-  return { videos, channels };
+  return { videos, channels, tokens };
 }
 
-// Direct JSON InnerTube Search (bypasses HTML consent wall)
-async function searchInnerTube(query: string) {
+// InnerTube search with automatic continuation pagination
+async function searchInnerTube(query: string, pages = 2) {
+  const allVideos: any[] = [];
+  const allChannels: any[] = [];
+  const seen = new Set<string>();
+
   try {
-    const res = await fetch(
-      "https://www.youtube.com/youtubei/v1/search?prettyPrint=false",
-      {
-        method: "POST",
-        headers: YT_HEADERS,
-        body: JSON.stringify({
-          context: CLIENT_CONTEXT,
-          query,
-        }),
-        cache: "no-store",
-      }
-    );
+    let continuation: string | undefined = undefined;
 
-    if (!res.ok) return { videos: [], channels: [] };
-    const data = await res.json();
-    const { videos, channels } = extractVideosAndChannels(data);
-    return { videos: videos.slice(0, 35), channels: channels.slice(0, 3) };
-  } catch {
-    return { videos: [], channels: [] };
-  }
+    for (let p = 0; p < pages; p++) {
+      const body: any = continuation
+        ? { context: CLIENT_CONTEXT, continuation }
+        : { context: CLIENT_CONTEXT, query };
+
+      const res = await fetch(
+        "https://www.youtube.com/youtubei/v1/search?prettyPrint=false",
+        {
+          method: "POST",
+          headers: YT_HEADERS,
+          body: JSON.stringify(body),
+          cache: "no-store",
+        }
+      );
+
+      if (!res.ok) break;
+      const data = await res.json();
+      const { videos, channels, tokens } = extractVideosChannelsAndTokens(data);
+
+      for (const v of videos) {
+        if (!seen.has(v.id)) {
+          seen.add(v.id);
+          allVideos.push(v);
+        }
+      }
+      if (p === 0) allChannels.push(...channels);
+
+      continuation = tokens[0];
+      if (!continuation) break;
+    }
+  } catch {}
+
+  return { videos: allVideos, channels: allChannels.slice(0, 3) };
 }
 
-// Direct JSON InnerTube Player / Next for Video Info & Comments
+// Fetch video metadata & comments
 async function fetchVideoDetails(videoId: string) {
   try {
     const [playerRes, nextRes] = await Promise.all([
@@ -260,7 +288,7 @@ async function fetchVideoDetails(videoId: string) {
   }
 }
 
-// Fetch creator channel metadata + deep catalog via InnerTube browse & parallel searches
+// Deep creator catalog: follows InnerTube browse continuation pages + parallel keyword sweeps
 async function fetchChannelData(
   channelId: string,
   tab = "videos",
@@ -275,10 +303,14 @@ async function fetchChannelData(
 
   const belongsToCreator = (v: any) => {
     if (channelId && v.channelId && v.channelId === channelId) return true;
+    const cleanTitle = title.toLowerCase().trim();
+    const cleanVideoCh = (v.channelTitle || "").toLowerCase().trim();
     if (
-      title &&
-      title !== "Channel" &&
-      v.channelTitle?.toLowerCase().trim() === title.toLowerCase().trim()
+      cleanTitle &&
+      cleanTitle !== "channel" &&
+      (cleanVideoCh === cleanTitle ||
+        cleanVideoCh.includes(cleanTitle) ||
+        cleanTitle.includes(cleanVideoCh))
     ) {
       return true;
     }
@@ -298,65 +330,81 @@ async function fetchChannelData(
     }
   };
 
-  // 1. InnerTube Browse for channel metadata & initial tab videos
+  // 1. InnerTube Browse + up to 6 continuation pages of the creator's actual tab
   if (channelId.startsWith("UC")) {
     try {
-      const browseRes = await fetch(
-        "https://www.youtube.com/youtubei/v1/browse?prettyPrint=false",
-        {
-          method: "POST",
-          headers: YT_HEADERS,
-          body: JSON.stringify({
-            context: CLIENT_CONTEXT,
-            browseId: channelId,
-            params: tab === "shorts" ? "EgZzaG9ydHPyBgQKAjoA" : "EgZ2aWRlb3PyBgQKAjoA",
-          }),
-          cache: "no-store",
-        }
-      );
+      let continuation: string | undefined = undefined;
+      const browseParams =
+        tab === "shorts"
+          ? "EgZzaG9ydHPyBgQKAjoA"
+          : tab === "live"
+          ? "EgdzdHJlYW1z8gYECgJ6AA%3D%3D"
+          : "EgZ2aWRlb3PyBgQKAjoA";
 
-      if (browseRes.ok) {
+      for (let page = 0; page < 7; page++) {
+        const body: any = continuation
+          ? { context: CLIENT_CONTEXT, continuation }
+          : { context: CLIENT_CONTEXT, browseId: channelId, params: browseParams };
+
+        const browseRes = await fetch(
+          "https://www.youtube.com/youtubei/v1/browse?prettyPrint=false",
+          {
+            method: "POST",
+            headers: YT_HEADERS,
+            body: JSON.stringify(body),
+            cache: "no-store",
+          }
+        );
+
+        if (!browseRes.ok) break;
         const data = await browseRes.json();
-        const meta = data?.metadata?.channelMetadataRenderer || {};
-        const header =
-          data?.header?.pageHeaderRenderer?.content?.pageHeaderViewModel ||
-          data?.header?.c4TabbedHeaderRenderer ||
-          {};
 
-        title = meta.title || title;
-        description = meta.description || "";
-        avatar =
-          meta.avatar?.thumbnails?.slice(-1)[0]?.url ||
-          header?.avatar?.thumbnails?.slice(-1)[0]?.url ||
-          "";
-        banner =
-          header?.banner?.imageBannerViewModel?.image?.sources?.slice(-1)[0]?.url ||
-          header?.banner?.thumbnails?.slice(-1)[0]?.url ||
-          "";
+        if (page === 0) {
+          const meta = data?.metadata?.channelMetadataRenderer || {};
+          const header =
+            data?.header?.pageHeaderRenderer?.content?.pageHeaderViewModel ||
+            data?.header?.c4TabbedHeaderRenderer ||
+            {};
 
-        const extracted = extractVideosAndChannels(data, title, channelId);
+          title = meta.title || title;
+          description = meta.description || "";
+          avatar =
+            meta.avatar?.thumbnails?.slice(-1)[0]?.url ||
+            header?.avatar?.thumbnails?.slice(-1)[0]?.url ||
+            "";
+          banner =
+            header?.banner?.imageBannerViewModel?.image?.sources?.slice(-1)[0]?.url ||
+            header?.banner?.thumbnails?.slice(-1)[0]?.url ||
+            "";
+        }
+
+        const extracted = extractVideosChannelsAndTokens(data, title, channelId);
         addUnique(extracted.videos, false);
+
+        continuation = extracted.tokens[0];
+        if (!continuation) break;
       }
     } catch {}
   }
 
-  // 2. Parallel InnerTube searches filtered to this creator for deep catalog
-  if (title && title !== "Channel") {
+  // 2. Supplement with parallel multi-year/topic searches for the creator
+  if (title && title !== "Channel" && allVideos.length < 150) {
     const suffixes =
       tab === "shorts"
         ? ["#shorts", "shorts", "clip"]
         : tab === "live"
         ? ["stream", "live", "vod"]
-        : ["", "2026", "2025", "2024", "best", "full"];
+        : ["", "2026", "2025", "2024", "2023", "best", "full", "episode"];
 
     const batches = await Promise.all(
-      suffixes.map((s) => searchInnerTube(`${title} ${s}`.trim()))
+      suffixes.map((s) => searchInnerTube(`${title} ${s}`.trim(), 2))
     );
     for (const b of batches) {
       addUnique(b.videos, true);
     }
   }
 
+  // 3. Sort by view count when "popular" tab is selected
   if (tab === "popular" && allVideos.length > 0) {
     const parseViews = (str: string) => {
       const m = (str || "").replace(/,/g, "").match(/([\d.]+)\s*([KMB])?/i);
@@ -383,7 +431,7 @@ async function fetchChannelData(
       avatar: avatar.startsWith("//") ? `https:${avatar}` : avatar,
       banner: banner.startsWith("//") ? `https:${banner}` : banner,
     },
-    videos: allVideos.slice(0, 150),
+    videos: allVideos.slice(0, 250),
   };
 }
 
@@ -400,7 +448,7 @@ export async function GET(req: NextRequest) {
     let fallbackInfo: any = null;
 
     if (!targetId && channelName) {
-      const searchRes = await searchInnerTube(channelName);
+      const searchRes = await searchInnerTube(channelName, 1);
       fallbackInfo = searchRes.channels[0] || null;
       targetId =
         searchRes.channels[0]?.id ||
@@ -440,13 +488,36 @@ export async function GET(req: NextRequest) {
     return NextResponse.json(details);
   }
 
-  const searchTerm = query.trim() || "popular music gaming tech 2026";
-  const results = await searchInnerTube(searchTerm);
+  // Homepage or Search: run parallel paginated searches to populate 35-60+ videos
+  const baseTerm = query.trim() || "trending music gaming tech 2026";
+  const queries = query.trim()
+    ? [baseTerm]
+    : [
+        baseTerm,
+        "popular gaming videos 2026",
+        "trending music videos 2026",
+        "science tech documentaries 4k",
+      ];
 
-  if (results.videos.length > 0 || results.channels.length > 0) {
+  const batches = await Promise.all(
+    queries.map((q) => searchInnerTube(q, query.trim() ? 3 : 2))
+  );
+
+  const mergedVideos: any[] = [];
+  const seen = new Set<string>();
+  for (const batch of batches) {
+    for (const v of batch.videos) {
+      if (!seen.has(v.id)) {
+        seen.add(v.id);
+        mergedVideos.push(v);
+      }
+    }
+  }
+
+  if (mergedVideos.length > 0 || batches[0]?.channels.length > 0) {
     return NextResponse.json({
-      videos: results.videos,
-      channels: query.trim() ? results.channels : [],
+      videos: mergedVideos.slice(0, 60),
+      channels: query.trim() ? batches[0].channels : [],
     });
   }
 
